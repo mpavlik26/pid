@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PID odjezdy · Zelený pruh → Poliklinika Budějovická</title>
+
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0c1210">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="route-title">PID · odjezdová tabule</div>
+  <h1 id="boardTitle"></h1>
+
+  <div id="setupScreen" class="setup" style="display:none;">
+    <p>
+      Data poskytuje datová platforma <strong>Golemio</strong> (provozovatel dat PID). Aplikace potřebuje
+      váš vlastní API klíč — je zdarma, registrace trvá pár minut.
+    </p>
+    <p>
+      Klíč získáte na
+      <a href="https://api.golemio.cz/api-keys/auth/sign-up" target="_blank" rel="noopener">api.golemio.cz/api-keys</a>.
+      Uloží se jen ve vašem prohlížeči (v localStorage), nikam se neposílá.
+    </p>
+    <label for="apiKeyInput">Golemio API klíč</label>
+    <input type="text" id="apiKeyInput" placeholder="vložte klíč" autocomplete="off">
+    <button id="saveKeyBtn">Uložit a spustit</button>
+    <div class="error" id="setupError"></div>
+  </div>
+
+  <div id="mainScreen" style="display:none;">
+    <div class="statusbar" id="statusbar">
+      <span><span class="dot"></span><span id="statusText">načítám…</span></span>
+      <div>
+        <button class="refresh-btn" id="refreshBtn">obnovit</button>
+      </div>
+    </div>
+    <div class="board" id="board">
+      <div class="empty">Načítám odjezdy…</div>
+    </div>
+    <div class="footnote">
+      Časy jsou přepočtené podle reálné polohy vozu, pokud je dostupná, jinak podle jízdního řádu.
+      Zobrazené linky jsou nastavené v <code>config.js</code> — pokud ROPID změní linkové vedení,
+      je potřeba je tam ručně aktualizovat.
+      <div class="linkrow"><button class="change-key" id="changeKeyBtn">změnit API klíč</button></div>
+    </div>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
