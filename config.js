@@ -3,5 +3,5 @@
 // connections.js. Tvar zůstává stejný jako dřív: fromLabel/toLabel/stopIds/allowed.
 let BOARD_CONFIG = null;
 
-const REFRESH_MS = 20000;
+const REFRESH_MS = 30000;
 const TICK_MS = 1000;

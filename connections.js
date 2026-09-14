@@ -151,6 +151,85 @@
     return map;
   }
 
+  // Stáhne stop_times pro danou zastávku a vrátí Map trip_id -> arrival_time
+  // (string "HH:MM:SS", může přesáhnout 24:00:00 u spojů přes půlnoc — GTFS
+  // konvence). Použito pro dopočet času příjezdu do cílové zastávky (US-8) —
+  // na rozdíl od fetchStopSequences nezajímá stop_sequence, ale čas.
+  async function fetchStopArrivals(stopId, apiKey) {
+    const data = await golemioGet(
+      '/gtfs/stoptimes/' + encodeURIComponent(stopId) + '?limit=10000',
+      apiKey
+    );
+    const rows = featureProps(data);
+    const map = new Map();
+    rows.forEach((row) => {
+      const tripId = row.trip_id;
+      if (!tripId || !row.arrival_time) return;
+      map.set(tripId, row.arrival_time);
+    });
+    return map;
+  }
+
+  // Viz mergeSequences — stejný důvod pro pauzu mezi nástupišti cílové
+  // zastávky (rate limit).
+  async function mergeArrivals(stopIds, apiKey) {
+    const merged = new Map();
+    for (let i = 0; i < stopIds.length; i++) {
+      const arrivals = await fetchStopArrivals(stopIds[i], apiKey);
+      arrivals.forEach((time, tripId) => merged.set(tripId, time));
+      if (i < stopIds.length - 1) await sleep(RATE_LIMIT_DELAY_MS);
+    }
+    return merged;
+  }
+
+  // Načte jízdním řádem daný (statický) čas příjezdu do cílové zastávky pro
+  // všechny spoje, které přes ni jedou. Volá se jednou při nastavení/změně
+  // BOARD_CONFIG (US-8), ne při každém refreshi odjezdů — statický jízdní
+  // řád se v rámci jedné session nemění.
+  async function loadDestinationArrivals(stopIds, apiKey, onProgress) {
+    const report = (text) => { if (onProgress) onProgress(text); };
+    report('Načítám jízdní řád cílové zastávky…');
+    return mergeArrivals(stopIds, apiKey);
+  }
+
+  // Poloha vozidla pro konkrétní spoj (US-8) — na rozdíl od GTFS endpointů
+  // vrací Golemio tady jeden GeoJSON Feature (ne FeatureCollection), skutečná
+  // data jsou tedy v properties, ne přímo v odpovědi. Vrátí Date poslední
+  // zprávy o poloze (origin_timestamp), nebo null, pokud spoj nemá aktuální
+  // polohu (404) nebo properties neobsahuje last_position — to není fatální
+  // chyba, řádek se prostě zobrazí bez informace o poloze.
+  async function fetchVehiclePosition(tripId, apiKey) {
+    try {
+      const data = await golemioGet('/vehiclepositions/' + encodeURIComponent(tripId), apiKey);
+      const props = data && data.properties;
+      const iso = props && props.last_position && props.last_position.origin_timestamp;
+      if (!iso) return null;
+      const d = new Date(iso);
+      return isNaN(d.getTime()) ? null : d;
+    } catch (e) {
+      if (e.status === 401 || e.status === 403) throw e;
+      return null;
+    }
+  }
+
+  // Znovu ověří polohu vozidla pro víc spojů sekvenčně, s pauzou kvůli rate
+  // limitu (stejný vzor jako mergeArrivals/mergeSequences). Volá se s KAŽDÝM
+  // refreshem seznamu spojů pro všechny aktuálně sledované spoje (US-8
+  // zpětná vazba: jednorázové zjištění polohy nestačí, potřeba průběžně
+  // ověřovat, jak moc je poslední známý údaj čerstvý). Výsledek jednoho
+  // spoje se hlásí přes onResult(tripId, date|null) hned po dotazu, aby
+  // volající (app.js) mohl průběžně promítat nové hodnoty do UI bez čekání
+  // na celou dávku. Chyba 401/403 z fetchVehiclePosition přeruší dávku a
+  // probublá volajícímu.
+  async function fetchVehiclePositions(tripIds, apiKey, onResult) {
+    for (let i = 0; i < tripIds.length; i++) {
+      const tripId = tripIds[i];
+      const result = await fetchVehiclePosition(tripId, apiKey);
+      if (onResult) onResult(tripId, result);
+      if (i < tripIds.length - 1) await sleep(RATE_LIMIT_DELAY_MS);
+    }
+  }
+
   // Přestupní uzly (typicky metro) mají pod stejným stop_name desítky
   // nástupišť/směrů (samostatné stop_id) — bez pauzy mezi requesty by se
   // snadno překročil Golemio rate limit (20 req / 8 s na klíč) a API by
@@ -305,6 +384,8 @@
     searchStops,
     warmStopIndex,
     computeAllowedRoutes,
+    loadDestinationArrivals,
+    fetchVehiclePositions,
     loadStopPair,
     saveStopPair,
     clearStopPair

@@ -6,6 +6,27 @@
   let tickTimer = null;
   let currentDepartures = []; // last fetched, filtered, with parsed predicted Date
 
+  // US-8: statický čas příjezdu do cílové zastávky, trip_id -> "HH:MM:SS".
+  // Načte se jednou po nastavení BOARD_CONFIG, ne při každém refreshi.
+  let destinationArrivals = new Map();
+
+  // US-8: poloha vozidla, trip_id -> {originTimestamp, fetchedAt} | 'failed'.
+  // Ověřuje se znovu při každém refreshi seznamu spojů pro všechny aktuálně
+  // sledované spoje (ne jen jednou) — viz refreshVehiclePositions.
+  let vehiclePositions = new Map();
+  let positionFetchInFlight = false;
+
+  // GTFS route type -> ikona druhu dopravního prostředku (US-8).
+  const ROUTE_TYPE_ICON = {
+    0: '🚊', // tramvaj
+    1: 'Ⓜ', // metro
+    2: '🚆', // vlak
+    3: '🚌', // autobus
+    4: '⛴', // přívoz
+    7: '🚞', // lanovka
+    11: '🚎' // trolejbus
+  };
+
   let selectedFrom = null; // { name, stopIds } vybrané kliknutím v autocomplete
   let selectedTo = null;
   let fromSearchResults = [];
@@ -143,10 +164,12 @@
         fromLabel: pair.from.name,
         toLabel: pair.to.name,
         stopIds: pair.from.stopIds,
+        toStopIds: pair.to.stopIds,
         allowed: pair.allowed
       };
       setTitle(BOARD_CONFIG);
       showMain();
+      loadDestinationArrivals();
       fetchDepartures();
       startTimer();
     } else {
@@ -284,10 +307,12 @@
         fromLabel: selectedFrom.name,
         toLabel: selectedTo.name,
         stopIds: selectedFrom.stopIds,
+        toStopIds: selectedTo.stopIds,
         allowed
       };
       setTitle(BOARD_CONFIG);
       showMain();
+      loadDestinationArrivals();
       fetchDepartures();
       startTimer();
     }catch(e){
@@ -318,6 +343,18 @@
     tickTimer = null;
   }
 
+  // Načte statický čas příjezdu do cílové zastávky pro všechny spoje (US-8).
+  // Volá se bez await z proceedAfterAuth()/findRoutesBtn handleru — dokud
+  // nedoběhne, render() jen zobrazí placeholder, žádné blokování hlavního flow.
+  async function loadDestinationArrivals(){
+    if (!BOARD_CONFIG || !BOARD_CONFIG.toStopIds) return;
+    try{
+      destinationArrivals = await Connections.loadDestinationArrivals(BOARD_CONFIG.toStopIds, apiKey);
+    }catch(e){
+      console.warn('Nepodařilo se načíst čas příjezdu do cílové zastávky', e);
+    }
+  }
+
   function predictedDate(dep){
     const ts = dep.departure_timestamp || {};
     const iso = ts.predicted || ts.scheduled;
@@ -339,10 +376,93 @@
     return {text, soon: totalSec <= 120, past};
   }
 
-  function fmtTime(iso){
-    if (!iso) return "—";
-    const d = new Date(iso);
-    return d.toLocaleTimeString('cs-CZ', {hour:'2-digit', minute:'2-digit'});
+  // Čas vč. vteřin (US-8), přijímá rovnou Date.
+  function formatClock(date){
+    if (!date || isNaN(date.getTime())) return "—";
+    return date.toLocaleTimeString('cs-CZ', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  }
+
+  function fmtDelaySeconds(sec){
+    if (!sec || sec <= 0) return 'na čas';
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return '+' + m + ':' + String(s).padStart(2, '0');
+  }
+
+  // Sestaví Date z GTFS času "HH:MM:SS" (hodiny mohou být >=24 u spojů přes
+  // půlnoc) vůči servisnímu dni odvozenému z baseDate. Pokud výsledek vyjde
+  // dřív než baseDate (okrajový případ kolem půlnoci), přičte den navíc.
+  function combineServiceDayTime(baseDate, hhmmss){
+    const parts = hhmmss.split(':').map(Number);
+    if (parts.length !== 3 || parts.some(Number.isNaN)) return null;
+    const [h, m, s] = parts;
+    const d = new Date(baseDate);
+    d.setHours(0, 0, 0, 0);
+    d.setSeconds(h * 3600 + m * 60 + s);
+    if (d.getTime() < baseDate.getTime()) d.setDate(d.getDate() + 1);
+    return d;
+  }
+
+  // Text značky o stáří polohy vozidla (US-8) — počítá se z vehiclePositions
+  // cache, aktualizuje se jak při render(), tak po vteřinách v tick().
+  function positionTagText(dep){
+    const delay = dep.delay || {};
+    if (!delay.is_available) return 'dle jízdního řádu';
+    const tripId = dep.trip && dep.trip.id;
+    const cached = tripId ? vehiclePositions.get(tripId) : null;
+    if (!cached) return 'poloha: zjišťuji…';
+    if (cached === 'failed') return 'poloha: neznámá';
+    const ageSec = Math.max(0, Math.round((Date.now() - cached.originTimestamp.getTime()) / 1000));
+    return 'poloha před ' + ageSec + ' s';
+  }
+
+  // Ověří polohu vozidla znovu pro všechny aktuálně sledované spoje (US-8
+  // zpětná vazba: jednorázové zjištění nestačí, s každým refreshem seznamu
+  // spojů se má zkusit zjistit aktuálnější údaj, ne u něj navždy zůstat).
+  // Sekvenční dotazy s pauzou kvůli rate limitu (Connections.fetchVehiclePositions),
+  // fire-and-forget, nezdržuje render(). Pokud dotaz pro už dřív úspěšně
+  // zjištěný spoj selže, ponechá se poslední známá hodnota (radši o kousek
+  // starší platný údaj než "neznámá") — díky tomu se "poloha: zjišťuji…" na
+  // UI píše jen při úplně prvním zjišťování daného spoje.
+  async function refreshVehiclePositions(departures){
+    if (positionFetchInFlight) return;
+    const tripIds = departures
+      .filter(dep => dep.delay && dep.delay.is_available && dep.trip && dep.trip.id)
+      .map(dep => dep.trip.id);
+    if (!tripIds.length) return;
+    positionFetchInFlight = true;
+    try{
+      await Connections.fetchVehiclePositions(tripIds, apiKey, (tripId, originTimestamp) => {
+        const hadData = vehiclePositions.get(tripId);
+        const alreadyKnown = hadData && hadData !== 'failed';
+        if (originTimestamp){
+          vehiclePositions.set(tripId, {originTimestamp, fetchedAt: Date.now()});
+        } else if (!alreadyKnown){
+          vehiclePositions.set(tripId, 'failed');
+        }
+        tick();
+      });
+    }catch(e){
+      if (e.status === 401 || e.status === 403){
+        stopTimer();
+        clearKey();
+        apiKey = null;
+        showSetup('API klíč nebyl přijat (chyba ' + e.status + '). Zkontrolujte, že jste ho zkopírovali celý.');
+      } else {
+        console.warn('Nepodařilo se načíst polohu vozidla', e);
+      }
+    }finally{
+      positionFetchInFlight = false;
+    }
+  }
+
+  // Odstraní z vehiclePositions spoje, které už nejsou mezi aktuálně
+  // zobrazenými (odjely / vypadly z filtru) — brání neomezenému růstu mapy.
+  function pruneVehiclePositions(departures){
+    const activeIds = new Set(departures.filter(dep => dep.trip && dep.trip.id).map(dep => dep.trip.id));
+    Array.from(vehiclePositions.keys()).forEach(tripId => {
+      if (!activeIds.has(tripId)) vehiclePositions.delete(tripId);
+    });
   }
 
   function render(departures){
@@ -355,22 +475,40 @@
       const trip = dep.trip || {};
       const stop = dep.stop || {};
       const delay = dep.delay || {};
-      const sched = dep.departure_timestamp ? dep.departure_timestamp.scheduled : null;
+      const schedIso = dep.departure_timestamp ? dep.departure_timestamp.scheduled : null;
+      const sched = schedIso ? new Date(schedIso) : null;
       const nightClass = route.is_night ? 'night' : '';
-      const hasDelay = delay.is_available && delay.minutes && delay.minutes > 0;
+      const hasDelay = delay.is_available && delay.seconds && delay.seconds > 0;
       const platform = stop.platform_code ? ` · stan. ${stop.platform_code}` : '';
-      const trackedTag = delay.is_available ? '● poloha vozu' : '';
+      const vtypeIcon = ROUTE_TYPE_ICON[route.type];
+
+      let arrHtml = '<span class="dim">–</span>';
+      const arrivalTime = trip.id ? destinationArrivals.get(trip.id) : null;
+      if (sched && arrivalTime){
+        const arrSched = combineServiceDayTime(sched, arrivalTime);
+        if (arrSched){
+          const arrExpected = new Date(arrSched.getTime() + (delay.seconds || 0) * 1000);
+          arrHtml = `${formatClock(arrSched)} <span class="dim">→</span> ${formatClock(arrExpected)}`;
+        }
+      }
+
       return `
         <div class="row" data-idx="${i}">
-          <div class="badge ${nightClass}">${route.short_name || '?'}</div>
+          <div class="badge ${nightClass}">
+            ${vtypeIcon ? `<span class="vtype">${vtypeIcon}</span>` : ''}
+            <span class="num">${route.short_name || '?'}</span>
+          </div>
           <div class="dest">
             <div class="headsign">${trip.headsign || ''}</div>
             <div class="meta">${trip.is_at_stop ? 've stanici' : 'na trase'}${platform}</div>
           </div>
           <div class="eta">
             <span class="min" data-countdown="${i}">…</span>
-            <div class="sched ${hasDelay ? 'delayed' : ''}">${fmtTime(sched)}${hasDelay ? ' +' + delay.minutes + ' min' : ''}</div>
-            ${trackedTag ? `<div class="live-tag">${trackedTag}</div>` : ''}
+            <div class="dep-block">
+              ${formatClock(sched)} <span class="${hasDelay ? 'delayed' : ''}">${fmtDelaySeconds(delay.seconds)}</span> <span class="dim">→</span> ${formatClock(dep._predicted)}
+            </div>
+            <div class="arr-block">${arrHtml}</div>
+            <div class="position" data-postag="${i}">${positionTagText(dep)}</div>
           </div>
         </div>`;
     }).join('');
@@ -379,11 +517,14 @@
 
   function tick(){
     currentDepartures.forEach((dep, i) => {
-      const el = board.querySelector('[data-countdown="' + i + '"]');
-      if (!el) return;
-      const {text, soon, past} = formatCountdown(dep._predicted);
-      el.textContent = past ? 'odjel' : text;
-      el.classList.toggle('soon', soon && !past);
+      const countdownEl = board.querySelector('[data-countdown="' + i + '"]');
+      if (countdownEl){
+        const {text, soon, past} = formatCountdown(dep._predicted);
+        countdownEl.textContent = past ? 'odjel' : text;
+        countdownEl.classList.toggle('soon', soon && !past);
+      }
+      const posEl = board.querySelector('[data-postag="' + i + '"]');
+      if (posEl) posEl.textContent = positionTagText(dep);
     });
   }
 
@@ -430,6 +571,8 @@
 
       currentDepartures = departures;
       render(departures);
+      pruneVehiclePositions(departures);
+      refreshVehiclePositions(departures);
       const now = new Date();
       statusText.textContent = 'aktualizováno ' + now.toLocaleTimeString('cs-CZ', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
       statusbar.classList.add('live');

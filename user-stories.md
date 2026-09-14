@@ -158,6 +158,65 @@ našeptávání.
 
 ---
 
+## US-8 — Polishing informací u každého spoje
+
+Další story - US-8 - by měla být o polishingu informací, které bych chtěl
+vidět u každého spoje.
+
+Věci, které tam jsou už teď:
+
+* linka - odlišil bych druhy dopravních prostředků (vlak, tramvaj, metro,
+  autobus, trolejbus, přívoz, ....)
+* cílová stanice (nechal bych obsahově stejně, jak máme nyní)
+* odjezdové stanoviště (nechal bych stejně)
+* odpočet včetně vteřin (nechal bych stejně (tj. i včetně informace o tom, že
+  spoj už odjel))
+
+Mix existujících a nových věcí:
+
+* čas odjezdu a zpoždení
+   * zobrazoval bych čas odjezdu (výrazněji / větším fontem než je dnes)
+     podle jízdního řádu (vč. vteřin), k tomu zpoždění (vč. vteřin) a k tomu
+     výsledný očekávaný čas odjezdu (vč. vteřin)
+* čas příjezdu do druhé zastávky
+   * zobrazoval bych čas příjezdu dle jízdního řádu (vč. vteřin), zpoždění je
+     stejné s odjezdem (nezobrazoval bych jej 2x) a k tomu očekávaný výsledný
+     čas
+* informace o tom, před jakou dobou máme poslední informace o poloze
+  vozidla, pokud je tato informace vůbec k dispozici:
+   * s tím souvisí lepší zachycení informací o tom, jestli je údaj na
+     základě polohy vozidla nebo je to jen čistě podle jízdního řádu
+
+**Akceptační kritéria**
+- U každého spoje se zobrazuje ikona druhu dopravního prostředku (tramvaj,
+  metro, vlak, autobus, přívoz, lanovka, trolejbus) odvozená z GTFS
+  `route.type`, vedle/nad číslem linky.
+- Cílová stanice, odjezdové stanoviště a countdown (vč. vteřin a stavu
+  "odjel") zůstávají beze změny oproti dosavadnímu chování.
+- Zobrazuje se čas odjezdu podle jízdního řádu (vč. vteřin), zpoždění
+  (vč. vteřin) a výsledný očekávaný čas odjezdu, výrazněji než dosavadní
+  drobný `.sched` řádek.
+- Zobrazuje se čas příjezdu do cílové zastávky podle jízdního řádu
+  (vč. vteřin) a výsledný očekávaný čas příjezdu; zpoždění se u příjezdu
+  nezobrazuje znovu (je stejné jako u odjezdu).
+- U spojů se sledovanou polohou (`delay.is_available`) se zobrazuje, před
+  jakou dobou byla naposledy zjištěna poloha vozidla; u spojů bez sledování
+  polohy appka jasně uvádí, že jde jen o údaj podle jízdního řádu.
+- Stáří polohy vozidla se ověřuje znovu při každém refreshi seznamu spojů
+  (ne jen jednou při prvním zjištění) pro všechny aktuálně sledované spoje
+  se sledovanou polohou — sekvenčně, s pauzou kvůli Golemio rate limitu;
+  úvodní vykreslení spojů na to nečeká.
+- Dokud nedorazí nová hodnota, zůstává na UI vidět naposledy známé stáří
+  (dál plynule tiká) — text "poloha: zjišťuji…" se zobrazuje jen při úplně
+  prvním zjišťování polohy daného spoje, ne při každém následném refreshi.
+  Pokud opakovaný dotaz selže u spoje, který už má dřív zjištěnou polohu,
+  appka ponechá poslední známou hodnotu místo přepnutí na "neznámá".
+- Auto-refresh dat z `departureboards` je nastavený na 30 s (dřív 20 s).
+
+**Stav:** Aktivní.
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 
