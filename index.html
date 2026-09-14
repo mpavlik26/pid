@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PID odjezdy · Zelený pruh → Poliklinika Budějovická</title>
+<title>PID odjezdy</title>
 
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#0c1210">
@@ -35,6 +35,24 @@
     <div class="error" id="setupError"></div>
   </div>
 
+  <div id="pickerScreen" class="setup" style="display:none;">
+    <p>
+      Vyberte dvojici zastávek, mezi kterými chcete sledovat přímé spoje.
+      Aplikace si sama dopočítá, které linky a směry mezi nimi skutečně jezdí.
+    </p>
+    <label for="fromInput">Odkud</label>
+    <input type="text" id="fromInput" placeholder="název zastávky" autocomplete="off">
+    <ul class="autocomplete" id="fromSuggestions"></ul>
+
+    <label for="toInput">Kam</label>
+    <input type="text" id="toInput" placeholder="název zastávky" autocomplete="off">
+    <ul class="autocomplete" id="toSuggestions"></ul>
+
+    <button id="findRoutesBtn" disabled>Zjistit spoje</button>
+    <div class="progress" id="pickerProgress" style="display:none;"></div>
+    <div class="error" id="pickerError" style="display:none;"></div>
+  </div>
+
   <div id="mainScreen" style="display:none;">
     <div class="statusbar" id="statusbar">
       <span><span class="dot"></span><span id="statusText">načítám…</span></span>
@@ -47,14 +65,17 @@
     </div>
     <div class="footnote">
       Časy jsou přepočtené podle reálné polohy vozu, pokud je dostupná, jinak podle jízdního řádu.
-      Zobrazené linky jsou nastavené v <code>config.js</code> — pokud ROPID změní linkové vedení,
-      je potřeba je tam ručně aktualizovat.
-      <div class="linkrow"><button class="change-key" id="changeKeyBtn">změnit API klíč</button></div>
+      Zobrazené linky se dopočítávají automaticky podle zvolené dvojice zastávek.
+      <div class="linkrow">
+        <button class="change-key" id="changeStopsBtn">změnit zastávky</button>
+        <button class="change-key" id="changeKeyBtn">změnit API klíč</button>
+      </div>
     </div>
   </div>
 </div>
 
 <script src="config.js"></script>
+<script src="connections.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
