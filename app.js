@@ -6,23 +6,42 @@
   let tickTimer = null;
   let currentDepartures = []; // last fetched, filtered, with parsed predicted Date
 
+  let selectedFrom = null; // { name, stopIds } vybrané kliknutím v autocomplete
+  let selectedTo = null;
+  let fromSearchResults = [];
+  let toSearchResults = [];
+
   const setupScreen = document.getElementById('setupScreen');
+  const pickerScreen = document.getElementById('pickerScreen');
   const mainScreen = document.getElementById('mainScreen');
   const apiKeyInput = document.getElementById('apiKeyInput');
   const saveKeyBtn = document.getElementById('saveKeyBtn');
   const setupError = document.getElementById('setupError');
+  const fromInput = document.getElementById('fromInput');
+  const fromSuggestions = document.getElementById('fromSuggestions');
+  const toInput = document.getElementById('toInput');
+  const toSuggestions = document.getElementById('toSuggestions');
+  const findRoutesBtn = document.getElementById('findRoutesBtn');
+  const pickerProgress = document.getElementById('pickerProgress');
+  const pickerError = document.getElementById('pickerError');
   const board = document.getElementById('board');
   const statusbar = document.getElementById('statusbar');
   const statusText = document.getElementById('statusText');
   const refreshBtn = document.getElementById('refreshBtn');
   const changeKeyBtn = document.getElementById('changeKeyBtn');
+  const changeStopsBtn = document.getElementById('changeStopsBtn');
   const titleEl = document.getElementById('boardTitle');
-
-  titleEl.innerHTML = `${escapeHtml(BOARD_CONFIG.fromLabel)} <span class="arrow">→</span> ${escapeHtml(BOARD_CONFIG.toLabel)}`;
-  document.title = `PID odjezdy · ${BOARD_CONFIG.fromLabel} → ${BOARD_CONFIG.toLabel}`;
 
   function escapeHtml(s){
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function debounce(fn, delay){
+    let t;
+    return function(...args){
+      clearTimeout(t);
+      t = setTimeout(() => fn.apply(this, args), delay);
+    };
   }
 
   function isAllowed(routeShort, headsign){
@@ -31,8 +50,14 @@
     );
   }
 
+  function setTitle(config){
+    titleEl.innerHTML = `${escapeHtml(config.fromLabel)} <span class="arrow">→</span> ${escapeHtml(config.toLabel)}`;
+    document.title = `PID odjezdy · ${config.fromLabel} → ${config.toLabel}`;
+  }
+
   function showSetup(message){
     setupScreen.style.display = 'block';
+    pickerScreen.style.display = 'none';
     mainScreen.style.display = 'none';
     if (message){
       setupError.textContent = message;
@@ -42,8 +67,47 @@
     }
   }
 
+  function showPicker(message){
+    setupScreen.style.display = 'none';
+    mainScreen.style.display = 'none';
+    pickerScreen.style.display = 'block';
+    if (message){
+      pickerError.textContent = message;
+      pickerError.style.display = 'block';
+    } else {
+      pickerError.style.display = 'none';
+      warmPickerIndex();
+    }
+  }
+
+  // Zahřeje klientský index zastávek (viz Connections.warmStopIndex), aby
+  // vyhledávání v polích Odkud/Kam bylo od prvního keystroke okamžité a
+  // case-insensitive (US-7). Volá se jen při čerstvém vstupu do pickeru, ne
+  // po chybě "žádný přímý spoj", kdy je index už zahřátý.
+  async function warmPickerIndex(){
+    pickerProgress.textContent = 'Připravuji seznam zastávek…';
+    pickerProgress.style.display = 'block';
+    try{
+      await Connections.warmStopIndex(apiKey, (text) => { pickerProgress.textContent = text; });
+    }catch(e){
+      console.error(e);
+      if (e.status === 401 || e.status === 403){
+        stopTimer();
+        clearKey();
+        apiKey = null;
+        showSetup('API klíč nebyl přijat (chyba ' + e.status + '). Zkontrolujte, že jste ho zkopírovali celý.');
+        return;
+      }
+      pickerError.textContent = 'Nepodařilo se načíst seznam zastávek. Zkuste to prosím znovu.';
+      pickerError.style.display = 'block';
+    }finally{
+      pickerProgress.style.display = 'none';
+    }
+  }
+
   function showMain(){
     setupScreen.style.display = 'none';
+    pickerScreen.style.display = 'none';
     mainScreen.style.display = 'block';
   }
 
@@ -70,6 +134,26 @@
     try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}
   }
 
+  // Po ověření API klíče rozhodne, jestli appka rovnou naběhne na uloženou
+  // dvojici zastávek, nebo jestli je potřeba nechat uživatele vybrat novou.
+  function proceedAfterAuth(){
+    const pair = Connections.loadStopPair();
+    if (pair && pair.from && pair.to && pair.allowed && pair.allowed.length){
+      BOARD_CONFIG = {
+        fromLabel: pair.from.name,
+        toLabel: pair.to.name,
+        stopIds: pair.from.stopIds,
+        allowed: pair.allowed
+      };
+      setTitle(BOARD_CONFIG);
+      showMain();
+      fetchDepartures();
+      startTimer();
+    } else {
+      showPicker();
+    }
+  }
+
   saveKeyBtn.addEventListener('click', () => {
     const val = apiKeyInput.value.trim();
     if (!val){
@@ -79,9 +163,7 @@
     }
     apiKey = val;
     saveKey(val);
-    showMain();
-    fetchDepartures();
-    startTimer();
+    proceedAfterAuth();
   });
 
   apiKeyInput.addEventListener('keydown', (e) => {
@@ -96,7 +178,133 @@
     apiKeyInput.value = '';
   });
 
+  changeStopsBtn.addEventListener('click', () => {
+    stopTimer();
+    Connections.clearStopPair();
+    BOARD_CONFIG = null;
+    selectedFrom = null;
+    selectedTo = null;
+    fromInput.value = '';
+    toInput.value = '';
+    fromSuggestions.innerHTML = '';
+    fromSuggestions.style.display = 'none';
+    toSuggestions.innerHTML = '';
+    toSuggestions.style.display = 'none';
+    updateFindButtonState();
+    showPicker();
+  });
+
   refreshBtn.addEventListener('click', () => fetchDepartures());
+
+  function updateFindButtonState(){
+    findRoutesBtn.disabled = !(selectedFrom && selectedTo);
+  }
+
+  function renderSuggestions(listEl, results){
+    if (!results.length){
+      listEl.innerHTML = '';
+      listEl.style.display = 'none';
+      return;
+    }
+    listEl.innerHTML = results
+      .map((r, i) => `<li data-idx="${i}">${escapeHtml(r.name)}</li>`)
+      .join('');
+    listEl.style.display = 'block';
+  }
+
+  function wireStopPicker(input, suggestionsEl, getResults, setResults, onSelect){
+    input.addEventListener('input', debounce(async () => {
+      onSelect(null);
+      const q = input.value.trim();
+      if (q.length < 2){
+        suggestionsEl.innerHTML = '';
+        suggestionsEl.style.display = 'none';
+        return;
+      }
+      try{
+        const results = await Connections.searchStops(q, apiKey);
+        setResults(results);
+        renderSuggestions(suggestionsEl, results);
+      }catch(e){
+        console.warn('Vyhledávání zastávek selhalo', e);
+      }
+    }, 300));
+
+    suggestionsEl.addEventListener('click', (e) => {
+      const li = e.target.closest('li');
+      if (!li) return;
+      const idx = Number(li.dataset.idx);
+      const picked = getResults()[idx];
+      if (!picked) return;
+      onSelect(picked);
+      input.value = picked.name;
+      suggestionsEl.innerHTML = '';
+      suggestionsEl.style.display = 'none';
+    });
+  }
+
+  wireStopPicker(
+    fromInput, fromSuggestions,
+    () => fromSearchResults,
+    (r) => { fromSearchResults = r; },
+    (picked) => { selectedFrom = picked; updateFindButtonState(); }
+  );
+
+  wireStopPicker(
+    toInput, toSuggestions,
+    () => toSearchResults,
+    (r) => { toSearchResults = r; },
+    (picked) => { selectedTo = picked; updateFindButtonState(); }
+  );
+
+  findRoutesBtn.addEventListener('click', async () => {
+    if (!selectedFrom || !selectedTo) return;
+    findRoutesBtn.disabled = true;
+    pickerError.style.display = 'none';
+    pickerProgress.style.display = 'block';
+    pickerProgress.textContent = 'Zjišťuji spoje…';
+    try{
+      const allowed = await Connections.computeAllowedRoutes(
+        selectedFrom.stopIds,
+        selectedTo.stopIds,
+        apiKey,
+        (text) => { pickerProgress.textContent = text; }
+      );
+      if (!allowed.length){
+        showPicker('Mezi těmito zastávkami nejede žádný přímý spoj. Zkuste jinou dvojici.');
+        return;
+      }
+      Connections.saveStopPair({
+        from: selectedFrom,
+        to: selectedTo,
+        allowed,
+        computedAt: new Date().toISOString()
+      });
+      BOARD_CONFIG = {
+        fromLabel: selectedFrom.name,
+        toLabel: selectedTo.name,
+        stopIds: selectedFrom.stopIds,
+        allowed
+      };
+      setTitle(BOARD_CONFIG);
+      showMain();
+      fetchDepartures();
+      startTimer();
+    }catch(e){
+      console.error(e);
+      if (e.status === 401 || e.status === 403){
+        stopTimer();
+        clearKey();
+        apiKey = null;
+        showSetup('API klíč nebyl přijat (chyba ' + e.status + '). Zkontrolujte, že jste ho zkopírovali celý.');
+      } else {
+        showPicker('Nepodařilo se dopočítat spoje. Zkuste to prosím znovu.');
+      }
+    }finally{
+      pickerProgress.style.display = 'none';
+      updateFindButtonState();
+    }
+  });
 
   function startTimer(){
     stopTimer();
@@ -180,7 +388,7 @@
   }
 
   async function fetchDepartures(){
-    if (!apiKey) return;
+    if (!apiKey || !BOARD_CONFIG) return;
     statusText.textContent = 'aktualizuji…';
     statusbar.classList.remove('live');
     try{
@@ -233,9 +441,7 @@
 
   (function init(){
     if (loadKey()){
-      showMain();
-      fetchDepartures();
-      startTimer();
+      proceedAfterAuth();
     } else {
       showSetup();
     }

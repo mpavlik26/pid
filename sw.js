@@ -1,12 +1,13 @@
 // Minimal service worker: caches the static app shell so the app opens even
 // offline (you just won't get live departures without network). It never
 // caches api.golemio.cz requests — those must always hit the network.
-const CACHE_NAME = 'pid-departures-shell-v1';
+const CACHE_NAME = 'pid-departures-shell-v5'; // bump při každé změně souborů v SHELL_FILES
 const SHELL_FILES = [
   './',
   './index.html',
   './style.css',
   './config.js',
+  './connections.js',
   './app.js',
   './manifest.webmanifest',
   './icons/icon-192.png',

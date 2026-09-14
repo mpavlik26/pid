@@ -1,7 +1,7 @@
-# PID odjezdy — Zelený pruh → Poliklinika Budějovická
+# PID odjezdy
 
 Jednoduchá PWA, která zobrazuje přímé spoje Pražské integrované dopravy mezi
-zastávkou **Zelený pruh** a **Poliklinika Budějovická**, seřazené podle
+libovolnou dvojicí zastávek, které si zvolíte v appce, seřazené podle
 skutečně zbývajícího času do odjezdu (přepočteno podle reálné polohy vozu,
 pokud je dostupná).
 
@@ -10,11 +10,15 @@ pokud je dostupná).
 ## Jak to funguje
 
 - Zdroj dat: [Golemio API](https://api.golemio.cz/) (oficiální datová platforma
-  Prahy), endpoint `/v2/pid/departureboards`.
+  Prahy), endpoint `/v2/pid/departureboards` pro odjezdy a GTFS static
+  endpointy (`/v2/gtfs/...`) pro dopočet přímých spojů.
 - Appka se zeptá na *váš vlastní* API klíč (zdarma, viz níže) a uloží ho do
   `localStorage` prohlížeče. Klíč nikam jinam neodchází.
-- Filtr linek/směrů je v `config.js` — natvrdo tam jsou zapsané linky, které
-  aktuálně jezdí přímo mezi těmito dvěma zastávkami (114, 134, noční 914).
+- Při prvním spuštění (nebo po kliknutí na "změnit zastávky") appka nechá
+  vybrat dvojici zastávek (Odkud/Kam) a sama dopočítá, které linky a směry
+  mezi nimi jezdí přímo — viz `connections.js`. Zvolená dvojice a dopočtený
+  seznam linek se uloží do `localStorage`, takže se příště appka rovnou
+  naběhne na poslední dvojici bez opětovného dopočtu.
 
 ## Nastavení API klíče
 
@@ -47,26 +51,17 @@ Screen") jako běžnou appku.
 
 ## Aktualizace seznamu linek
 
-Pokud ROPID změní linkové vedení, seznam povolených linek v `config.js`
-zastará. Postup, jak ho znovu vygenerovat:
-
-1. Stáhnout aktuální jízdní řády: `https://data.pid.cz/PID_GTFS.zip`
-2. Rozbalit a najít `stop_id` obou zastávek v `stops.txt`.
-3. V `stop_times.txt` najít trip_id, které obsahují obě zastávky ve správném
-   pořadí (Zelený pruh dřív než Poliklinika Budějovická).
-4. Podle těch trip_id dohledat v `trips.txt` čísla linek (`routes.txt`) a
-   cílové tabule (`trip_headsign`).
-5. Aktualizovat pole `allowed` v `config.js`.
-
-(Dalo by se to i zautomatizovat skriptem, který by tohle dělal za tebe při
-buildu — zatím to ale není potřeba pro dvě zastávky.)
+Seznam povolených linek/směrů se **nedopočítává ručně** a needituje se v
+`config.js` — appka si ho sama dopočítá při volbě dvojice zastávek (viz výš),
+z GTFS static dat Golemio API (`connections.js`, funkce
+`computeAllowedRoutes`). Pokud ROPID změní linkové vedení, stačí v appce
+kliknout na "změnit zastávky" a nechat dopočet proběhnout znovu — žádný
+ruční zásah do kódu.
 
 ## Známá omezení
 
 - Placeholder ikony v `icons/` jsou vygenerované narychlo (amber čtverec) —
   budou chtít pořádný redesign, než to bude vypadat jako "appka", ne prototyp.
-- Appka počítá s jednou pevnou dvojicí zastávek. Rozšíření na víc tras by
-  chtělo předělat `config.js` na pole více "boards" a přidat přepínač v UI.
 - Přesnost countdownu na vteřiny je vizuální plynulost, ne záruka — predikce
   vychází z GPS polohy vozu a modelu zpoždění, ne z fyzického příjezdu na
   vteřinu přesně.

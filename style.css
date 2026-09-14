@@ -155,11 +155,43 @@ h1 .arrow{color:var(--amber);}
   font-size:13.5px;
 }
 .setup button:hover{background:#ffc04d;}
+.setup button:disabled{
+  background:var(--amber-dim);
+  color:var(--text-dim);
+  cursor:not-allowed;
+}
 .error{
   color:var(--red);
   font-size:12.5px;
   margin-top:10px;
   display:none;
+}
+
+.autocomplete{
+  list-style:none;
+  margin:0 0 10px;
+  padding:0;
+  display:none;
+  background:#0a0f0d;
+  border:1px solid var(--line);
+  border-radius:4px;
+  max-height:220px;
+  overflow-y:auto;
+}
+.autocomplete li{
+  padding:9px 12px;
+  font-size:13px;
+  cursor:pointer;
+  border-bottom:1px solid var(--line);
+}
+.autocomplete li:last-child{border-bottom:none;}
+.autocomplete li:hover{background:var(--panel);color:var(--amber);}
+
+.progress{
+  font-size:12.5px;
+  color:var(--text-dim);
+  margin-top:10px;
+  font-family:var(--mono);
 }
 
 .footnote{
@@ -169,7 +201,7 @@ h1 .arrow{color:var(--amber);}
   line-height:1.6;
 }
 .footnote a{color:var(--text-dim);}
-.linkrow{margin-top:6px;}
+.linkrow{margin-top:6px;display:flex;gap:14px;}
 .change-key{
   background:none;border:none;color:var(--text-dim);
   text-decoration:underline;cursor:pointer;font-size:11.5px;padding:0;
