@@ -1,11 +1,15 @@
 // Minimal service worker: caches the static app shell so the app opens even
 // offline (you just won't get live departures without network). It never
 // caches api.golemio.cz requests — those must always hit the network.
-const CACHE_NAME = 'pid-departures-shell-v5'; // bump při každé změně souborů v SHELL_FILES
+// US-9: APP_VERSION je jediný zdroj pravdy pro verzi appky, sdílený s UI
+// (viz version.js, app.js) — bump verze tak stačí udělat jen na jednom místě.
+importScripts('./version.js');
+const CACHE_NAME = 'pid-departures-shell-' + APP_VERSION; // bump při každé změně souborů v SHELL_FILES
 const SHELL_FILES = [
   './',
   './index.html',
   './style.css',
+  './version.js',
   './config.js',
   './connections.js',
   './app.js',
@@ -15,8 +19,16 @@ const SHELL_FILES = [
 ];
 
 self.addEventListener('install', (event) => {
+  // {cache: 'reload'} obchází běžnou HTTP cache prohlížeče/CDN — bez toho
+  // se mohlo stát, že cache.addAll() při novém CACHE_NAME přesto dotáhne
+  // starou (ještě neexpirovanou) verzi jednoho souboru ze SHELL_FILES a
+  // spolu s čerstvými ostatními vytvoří nekonzistentní app shell.
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_FILES))
+    caches.open(CACHE_NAME).then((cache) =>
+      Promise.all(SHELL_FILES.map((url) =>
+        fetch(url, { cache: 'reload' }).then((response) => cache.put(url, response))
+      ))
+    )
   );
   self.skipWaiting();
 });
