@@ -9,6 +9,9 @@
   // US-8: statický čas příjezdu do cílové zastávky, trip_id -> "HH:MM:SS".
   // Načte se jednou po nastavení BOARD_CONFIG, ne při každém refreshi.
   let destinationArrivals = new Map();
+  // US-10: dokud je false, render() u příjezdu zobrazí explicitně "zjišťuji…"
+  // místo tichého "–" — viz loadDestinationArrivals().
+  let destinationArrivalsLoaded = false;
 
   // US-8: poloha vozidla, trip_id -> {originTimestamp, fetchedAt} | 'failed'.
   // Ověřuje se znovu při každém refreshi seznamu spojů pro všechny aktuálně
@@ -354,6 +357,12 @@
       destinationArrivals = await Connections.loadDestinationArrivals(BOARD_CONFIG.toStopIds, apiKey);
     }catch(e){
       console.warn('Nepodařilo se načíst čas příjezdu do cílové zastávky', e);
+    }finally{
+      // US-10: jakmile je pokus hotový (ať už úspěšně nebo ne), appka o tom
+      // nemá dál mlčet do dalšího auto-refreshe — hned přerenderuje, aby se
+      // "zjišťuji…" u příjezdu bez zbytečného čekání změnilo na výsledek.
+      destinationArrivalsLoaded = true;
+      if (currentDepartures.length) render(currentDepartures);
     }
   }
 
@@ -384,11 +393,15 @@
     return date.toLocaleTimeString('cs-CZ', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
   }
 
+  // US-10: záporné sec = spoj jede s náskokem, zobrazí se '−m:ss' (modře,
+  // viz .delay-row.early v style.css), ne skryté pod 'na čas' jako dřív.
   function fmtDelaySeconds(sec){
-    if (!sec || sec <= 0) return 'na čas';
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return '+' + m + ':' + String(s).padStart(2, '0');
+    if (!sec) return 'na čas';
+    const sign = sec > 0 ? '+' : '−';
+    const abs = Math.abs(sec);
+    const m = Math.floor(abs / 60);
+    const s = abs % 60;
+    return sign + m + ':' + String(s).padStart(2, '0');
   }
 
   // Sestaví Date z GTFS času "HH:MM:SS" (hodiny mohou být >=24 u spojů přes
@@ -409,13 +422,21 @@
   // cache, aktualizuje se jak při render(), tak po vteřinách v tick().
   function positionTagText(dep){
     const delay = dep.delay || {};
-    if (!delay.is_available) return 'dle jízdního řádu';
+    if (!delay.is_available) return 'bez údajů o aktuální poloze';
     const tripId = dep.trip && dep.trip.id;
     const cached = tripId ? vehiclePositions.get(tripId) : null;
     if (!cached) return 'poloha: zjišťuji…';
     if (cached === 'failed') return 'poloha: neznámá';
     const ageSec = Math.max(0, Math.round((Date.now() - cached.originTimestamp.getTime()) / 1000));
     return 'poloha před ' + ageSec + ' s';
+  }
+
+  // Barevný stav značky o poloze — červeně jen když appka pro daný spoj vůbec
+  // nemá aktuální polohu (delay.is_available false), ne u přechodných stavů
+  // jako "zjišťuji…" nebo "neznámá" (viz .position.unavailable ve style.css).
+  function positionTagClass(dep){
+    const delay = dep.delay || {};
+    return delay.is_available ? '' : 'unavailable';
   }
 
   // Ověří polohu vozidla znovu pro všechny aktuálně sledované spoje (US-8
@@ -480,17 +501,25 @@
       const schedIso = dep.departure_timestamp ? dep.departure_timestamp.scheduled : null;
       const sched = schedIso ? new Date(schedIso) : null;
       const nightClass = route.is_night ? 'night' : '';
-      const hasDelay = delay.is_available && delay.seconds && delay.seconds > 0;
       const platform = stop.platform_code ? ` · stan. ${stop.platform_code}` : '';
       const vtypeIcon = ROUTE_TYPE_ICON[route.type];
 
-      let arrHtml = '<span class="dim">–</span>';
+      // US-10: zpoždění se zobrazuje jako samostatný delay-row mezi odjezdem
+      // a příjezdem (platí pro oba), kladné červeně, záporné (náskok) modře.
+      const delaySec = delay.seconds || 0;
+      const delayClass = delaySec > 0 ? 'delayed' : (delaySec < 0 ? 'early' : '');
+
+      // US-10: náskok se do výpočtu příjezdu nezapočítává (spoj s náskokem
+      // dorazí do cíle dle jízdního řádu, ne dřív) — zpoždění ano, jako dřív.
+      let arrHtml = destinationArrivalsLoaded
+        ? '<span class="dim">čas příjezdu: nedostupný</span>'
+        : '<span class="dim">čas příjezdu: zjišťuji…</span>';
       const arrivalTime = trip.id ? destinationArrivals.get(trip.id) : null;
       if (sched && arrivalTime){
         const arrSched = combineServiceDayTime(sched, arrivalTime);
         if (arrSched){
-          const arrExpected = new Date(arrSched.getTime() + (delay.seconds || 0) * 1000);
-          arrHtml = `${formatClock(arrSched)} <span class="dim">→</span> ${formatClock(arrExpected)}`;
+          const arrExpected = new Date(arrSched.getTime() + Math.max(0, delaySec) * 1000);
+          arrHtml = `${formatClock(arrSched)} <span class="dim">příjezd →</span> ${formatClock(arrExpected)}`;
         }
       }
 
@@ -509,10 +538,13 @@
           </div>
           <div class="row-details">
             <div class="dep-block">
-              ${formatClock(sched)} <span class="${hasDelay ? 'delayed' : ''}">${fmtDelaySeconds(delay.seconds)}</span> <span class="dim">→</span> ${formatClock(dep._predicted)}
+              ${formatClock(sched)} <span class="dim">odjezd →</span> ${formatClock(dep._predicted)}
+            </div>
+            <div class="delay-row ${delayClass}">
+              <span class="arrow">↓</span> <span class="delay-value">${fmtDelaySeconds(delaySec)}</span> <span class="arrow">↓</span>
             </div>
             <div class="arr-block">${arrHtml}</div>
-            <div class="position" data-postag="${i}">${positionTagText(dep)}</div>
+            <div class="position ${positionTagClass(dep)}" data-postag="${i}">${positionTagText(dep)}</div>
           </div>
         </div>`;
     }).join('');
@@ -528,7 +560,10 @@
         countdownEl.classList.toggle('soon', soon && !past);
       }
       const posEl = board.querySelector('[data-postag="' + i + '"]');
-      if (posEl) posEl.textContent = positionTagText(dep);
+      if (posEl){
+        posEl.textContent = positionTagText(dep);
+        posEl.classList.toggle('unavailable', positionTagClass(dep) === 'unavailable');
+      }
     });
   }
 
