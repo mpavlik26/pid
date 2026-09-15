@@ -494,16 +494,18 @@
 
       return `
         <div class="row" data-idx="${i}">
-          <div class="badge ${nightClass}">
-            ${vtypeIcon ? `<span class="vtype">${vtypeIcon}</span>` : ''}
-            <span class="num">${route.short_name || '?'}</span>
-          </div>
-          <div class="dest">
-            <div class="headsign">${trip.headsign || ''}</div>
-            <div class="meta">${trip.is_at_stop ? 've stanici' : 'na trase'}${platform}</div>
-          </div>
-          <div class="eta">
+          <div class="row-top">
+            <div class="badge ${nightClass}">
+              ${vtypeIcon ? `<span class="vtype">${vtypeIcon}</span>` : ''}
+              <span class="num">${route.short_name || '?'}</span>
+            </div>
+            <div class="dest">
+              <div class="headsign">${trip.headsign || ''}</div>
+              <div class="meta">${trip.is_at_stop ? 've stanici' : 'na trase'}${platform}</div>
+            </div>
             <span class="min" data-countdown="${i}">…</span>
+          </div>
+          <div class="row-details">
             <div class="dep-block">
               ${formatClock(sched)} <span class="${hasDelay ? 'delayed' : ''}">${fmtDelaySeconds(delay.seconds)}</span> <span class="dim">→</span> ${formatClock(dep._predicted)}
             </div>
