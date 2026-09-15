@@ -235,6 +235,57 @@ verzi.
 
 ---
 
+## US-10 — Přeuspořádání údajů o zpoždění, odjezdu a příjezdu
+
+V rámci nové story US-10 bych chtěl přeuspořádat údaje o zpoždění, odjezdu a
+příjezdu. Stručnou představu o designu přikládám. Je potřeba explicitně
+zmínit edge case, kdy příjezdový čas je dotahován až formou lazy loadu
+později a není k dispozici.
+
+Proti současnému chování bych ale potřeboval i jednu změnu aplikační logiky
+s tím související:
+
+* pokud jede spoj s náskokem, měl by být náskok viditelný podobně jako
+  zpoždění (tedy podobně jako je při zpoždění zobrazováno +0:20 červeně by
+  při náskoku mělo být zobrazováno -0:20 při dvacetivteřinovém náskoku
+  modře)
+   * zároveň platí, že náskok by neměl být započítáván do příjezdového
+     času. Tedy pokud jede spoj s náskokem 20s, tak pro účely výpočtu
+     příjezdu se to bere tak, že do cíle přijede včas. Zpoždění se
+     samozřejmě přičítat musí (tak, jako to teď).
+
+Přiložený náčrtek (přepis rukopisu):
+
+```
+15:37:20 odjezd  =>  15:38:40
+        ↓
+     +1:20
+        ↓
+15:43:40 příjezd  =>  15:45:00
+```
+
+**Akceptační kritéria**
+- Zpoždění se zobrazuje jako samostatný řádek mezi časem odjezdu a
+  příjezdu (ne inline u odjezdu, jako dřív), protože platí pro oba.
+- Kladné zpoždění se zobrazuje jako `+m:ss` červeně (beze změny). Záporné
+  (spoj jede s náskokem) se nově zobrazuje jako `−m:ss` modře, místo aby
+  zmizelo pod "na čas". Nulové/neznámé zpoždění zůstává "na čas" bez barvy.
+- Výpočet očekávaného času příjezdu do cílové zastávky zpoždění nadále
+  přičítá, ale náskok do něj nezapočítává — spoj s náskokem má v appce
+  vypočtený příjezd podle jízdního řádu, ne dřív.
+- Dokud appka ještě nedotáhla statický jízdní řád cílové zastávky (lazy
+  load, viz US-8), zobrazuje se u příjezdu explicitně
+  "čas příjezdu: zjišťuji…"; pokud se po dotažení pro daný spoj nenajde
+  záznam, zobrazuje se "čas příjezdu: nedostupný" — místo dosavadního
+  tichého "–" v obou případech.
+- Jakmile se dotažení dokončí (úspěšně i neúspěšně), appka zobrazené spoje
+  rovnou přerenderuje, aby uživatel na výsledek nečekal až do dalšího
+  auto-refreshe.
+
+**Stav:** Aktivní.
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 
