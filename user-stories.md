@@ -217,6 +217,24 @@ Mix existujících a nových věcí:
 
 ---
 
+## US-9 — Verze appky viditelná ve spodní části obrazovky
+
+Ted by se mi libilo, kdyby ve spodni casti obrazovky byla k dispozici verze,
+aby bylo mozne vzdy bezpecne zjistit, jestli se divam na spravnou nejnovejsi
+verzi.
+
+**Akceptační kritéria**
+- Ve spodní části obrazovky (footer) je vždy viditelné označení verze appky.
+- Číslo/označení verze je jediný zdroj pravdy sdílený s `CACHE_NAME` v
+  `sw.js` — bump verze při deploi tak stačí udělat na jednom místě a projeví
+  se zároveň v UI i v cache busting mechanismu.
+- Podle zobrazené verze lze bezpečně poznat, jestli prohlížeč servíruje
+  aktuální nasazenou verzi, nebo starou cachovanou appku.
+
+**Stav:** Aktivní.
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 

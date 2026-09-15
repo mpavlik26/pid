@@ -52,6 +52,8 @@
   const changeKeyBtn = document.getElementById('changeKeyBtn');
   const changeStopsBtn = document.getElementById('changeStopsBtn');
   const titleEl = document.getElementById('boardTitle');
+  const versionEl = document.getElementById('appVersion');
+  if (versionEl) versionEl.textContent = 'verze ' + APP_VERSION;
 
   function escapeHtml(s){
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
