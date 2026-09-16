@@ -7,11 +7,22 @@
   let currentDepartures = []; // last fetched, filtered, with parsed predicted Date
 
   // US-8: statický čas příjezdu do cílové zastávky, trip_id -> "HH:MM:SS".
-  // Načte se jednou po nastavení BOARD_CONFIG, ne při každém refreshi.
+  // Načte se po nastavení BOARD_CONFIG; dokud se to nepodaří, zkouší se to
+  // znovu při každém refreshi odjezdů (viz fetchDepartures) — jednorázový
+  // pokus bez opakování dřív při jediném selhání (např. kolize s rate
+  // limitem hned po startu appky) natrvalo zabil příjezdové časy pro
+  // zbytek session, viz bugfix v loadDestinationArrivals().
   let destinationArrivals = new Map();
   // US-10: dokud je false, render() u příjezdu zobrazí explicitně "zjišťuji…"
-  // místo tichého "–" — viz loadDestinationArrivals().
+  // místo tichého "–" — viz loadDestinationArrivals(). Nastaví se na true jen
+  // po ÚSPĚŠNÉM načtení, ne po každém pokusu.
   let destinationArrivalsLoaded = false;
+  let destinationArrivalsInFlight = false;
+  // Zvýší se při každém nastavení nové dvojice zastávek — probíhající pokus
+  // o načtení pro starou dvojici se po doběhnutí pozná jako zastaralý (podle
+  // téhle hodnoty) a jeho výsledek se zahodí, místo aby přepsal už načtená
+  // data nové dvojice.
+  let arrivalsGeneration = 0;
 
   // US-8: poloha vozidla, trip_id -> {originTimestamp, fetchedAt} | 'failed'.
   // Ověřuje se znovu při každém refreshi seznamu spojů pro všechny aktuálně
@@ -174,6 +185,10 @@
       };
       setTitle(BOARD_CONFIG);
       showMain();
+      destinationArrivals = new Map();
+      destinationArrivalsLoaded = false;
+      destinationArrivalsInFlight = false;
+      arrivalsGeneration++;
       loadDestinationArrivals();
       fetchDepartures();
       startTimer();
@@ -317,6 +332,10 @@
       };
       setTitle(BOARD_CONFIG);
       showMain();
+      destinationArrivals = new Map();
+      destinationArrivalsLoaded = false;
+      destinationArrivalsInFlight = false;
+      arrivalsGeneration++;
       loadDestinationArrivals();
       fetchDepartures();
       startTimer();
@@ -349,20 +368,41 @@
   }
 
   // Načte statický čas příjezdu do cílové zastávky pro všechny spoje (US-8).
-  // Volá se bez await z proceedAfterAuth()/findRoutesBtn handleru — dokud
-  // nedoběhne, render() jen zobrazí placeholder, žádné blokování hlavního flow.
+  // Volá se bez await z proceedAfterAuth()/findRoutesBtn handleru a dál pak
+  // opakovaně z fetchDepartures(), dokud se nepodaří — dokud nedoběhne
+  // úspěšně, render() jen zobrazí placeholder, žádné blokování hlavního flow.
+  //
+  // Bugfix: dřív se po JAKÉMKOLI selhání (i jednorázovém, např. kolize s
+  // Golemio rate limitem těsně po startu appky, kdy běží najednou tenhle
+  // dotaz i první fetchDepartures()/refreshVehiclePositions()) natrvalo
+  // vzdala pro zbytek session — na rozdíl od polohy vozidla, která se
+  // zkouší znovu při každém refreshi. destinationArrivalsLoaded se teď
+  // nastaví na true jen po úspěchu, takže se to samo zkusí znovu.
   async function loadDestinationArrivals(){
     if (!BOARD_CONFIG || !BOARD_CONFIG.toStopIds) return;
+    if (destinationArrivalsInFlight) return;
+    const myGeneration = arrivalsGeneration;
+    destinationArrivalsInFlight = true;
     try{
-      destinationArrivals = await Connections.loadDestinationArrivals(BOARD_CONFIG.toStopIds, apiKey);
+      const result = await Connections.loadDestinationArrivals(BOARD_CONFIG.toStopIds, apiKey);
+      if (myGeneration !== arrivalsGeneration) return; // mezitím se změnila dvojice zastávek
+      destinationArrivals = result;
+      destinationArrivalsLoaded = true;
     }catch(e){
-      console.warn('Nepodařilo se načíst čas příjezdu do cílové zastávky', e);
+      if (myGeneration !== arrivalsGeneration) return;
+      console.warn('Nepodařilo se načíst čas příjezdu do cílové zastávky, zkusím to znovu při dalším refreshi', e);
+      if (e.status === 401 || e.status === 403){
+        stopTimer();
+        clearKey();
+        apiKey = null;
+        showSetup('API klíč nebyl přijat (chyba ' + e.status + '). Zkontrolujte, že jste ho zkopírovali celý.');
+      }
     }finally{
+      if (myGeneration === arrivalsGeneration) destinationArrivalsInFlight = false;
       // US-10: jakmile je pokus hotový (ať už úspěšně nebo ne), appka o tom
       // nemá dál mlčet do dalšího auto-refreshe — hned přerenderuje, aby se
       // "zjišťuji…" u příjezdu bez zbytečného čekání změnilo na výsledek.
-      destinationArrivalsLoaded = true;
-      if (currentDepartures.length) render(currentDepartures);
+      if (myGeneration === arrivalsGeneration && currentDepartures.length) render(currentDepartures);
     }
   }
 
@@ -579,22 +619,7 @@
       params.set('order', 'real');
       params.set('mode', 'departures');
 
-      const url = 'https://api.golemio.cz/v2/pid/departureboards?' + params.toString();
-      const res = await fetch(url, {
-        headers: { 'X-Access-Token': apiKey }
-      });
-
-      if (res.status === 401 || res.status === 403){
-        stopTimer();
-        showSetup('API klíč nebyl přijat (chyba ' + res.status + '). Zkontrolujte, že jste ho zkopírovali celý.');
-        return;
-      }
-      if (!res.ok){
-        statusText.textContent = 'chyba serveru (' + res.status + '), zkusím znovu za 20 s';
-        return;
-      }
-
-      const data = await res.json();
+      const data = await Connections.golemioGet('/pid/departureboards?' + params.toString(), apiKey);
       const departures = (data.departures || [])
         .filter(dep => {
           const rn = dep.route && dep.route.short_name;
@@ -612,12 +637,24 @@
       render(departures);
       pruneVehiclePositions(departures);
       refreshVehiclePositions(departures);
+      // Bugfix: dřív se čas příjezdu zkoušel načíst jen jednou při startu —
+      // při selhání (viz loadDestinationArrivals) appka o další pokus už
+      // nikdy nepožádala. Teď se to zkouší znovu při každém refreshi
+      // odjezdů, dokud se to jednou nepovede.
+      if (!destinationArrivalsLoaded) loadDestinationArrivals();
       const now = new Date();
       statusText.textContent = 'aktualizováno ' + now.toLocaleTimeString('cs-CZ', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
       statusbar.classList.add('live');
     }catch(e){
       console.error(e);
-      statusText.textContent = 'nepodařilo se načíst data, zkusím znovu';
+      if (e.status === 401 || e.status === 403){
+        stopTimer();
+        showSetup('API klíč nebyl přijat (chyba ' + e.status + '). Zkontrolujte, že jste ho zkopírovali celý.');
+      } else if (e.status){
+        statusText.textContent = 'chyba serveru (' + e.status + '), zkusím znovu za 20 s';
+      } else {
+        statusText.textContent = 'nepodařilo se načíst data, zkusím znovu';
+      }
     }
   }
 
