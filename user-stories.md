@@ -364,11 +364,27 @@ Chtěl bych tyto základní funkcionality:
     tento výsledek "poliklinika b" - tedy celé první slovo (resp. kompletní
     levý substring)
 
+Dodatek k zadání: ocenil bych, kdyby se podobně jako mezery v názvu chovaly
+i pomlčky. Např. u stanice "Praha-Libeň" by bylo skvělé, kdyby fungoval
+filtr po napsání "p li". To není bug, to je jen rozšíření zadání - takže
+bug v zadání.
+
 **Akceptační kritéria**
 
-_Doplní se po upřesnění návrhu řešení._
+- Výsledky vyhledávání zastávek (dropdown nápovědy u obou polí) jsou seřazené
+  abecedně, ne podle relevance shody jako dřív.
+- Vyhledávání funguje bez ohledu na diakritiku — dotaz i bez diakritiky
+  (např. "budejovicka") najde zastávky s diakritikou ("Budějovická").
+- Dotaz se dělí na tokeny podle mezer; každý token musí být prefixem
+  některého slova z názvu zastávky (slova se procházejí zleva doprava,
+  jeden token = jedno slovo). Např. "pol b" tak najde "Poliklinika
+  Budějovická" i "Poliklinika Barrandov" — nestačí už jen shoda od úplného
+  začátku názvu zastávky.
+- Pomlčka v názvu zastávky se chová jako další oddělovač slov — např.
+  "Praha-Libeň" se dá najít i zadáním "p li" (dvě samostatná slova).
+- Limit 25 zobrazených výsledků zůstává zachován.
 
-**Stav:** Návrh se připravuje.
+**Stav:** Aktivní.
 
 ---
 
