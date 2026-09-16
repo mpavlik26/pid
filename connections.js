@@ -5,11 +5,17 @@
   const API_BASE = 'https://api.golemio.cz/v2';
   const STOP_PAIR_KEY = 'pid_departures_stop_pair';
   const STOP_INDEX_KEY = 'pid_departures_stop_index';
-  const STOP_INDEX_TTL_MS = 24 * 60 * 60 * 1000; // GTFS feed se aktualizuje denně
   const STOP_INDEX_PAGE_LIMIT = 10000;
   const STOP_INDEX_MAX_PAGES = 5; // bezpečnostní strop proti nekonečné stránkované smyčce
   const ROUTE_INDEX_KEY = 'pid_departures_route_index';
-  const ROUTE_INDEX_TTL_MS = 24 * 60 * 60 * 1000; // GTFS feed se aktualizuje denně
+
+  // Per-stopId cache statického jízdního řádu (US-13) — viz
+  // fetchStopSequences/fetchStopArrivals/fetchTripsForStop. Klíčovaná podle
+  // jednotlivé zastávky, ne podle celé dvojice, aby se ušetřilo API volání,
+  // i když se mezi dvěma dopočty opakuje jen jedna ze stanic.
+  const STOP_SEQ_CACHE_KEY = 'pid_departures_stop_seq_cache';
+  const STOP_ARRIVALS_CACHE_KEY = 'pid_departures_stop_arrivals_cache';
+  const TRIP_INFO_CACHE_KEY = 'pid_departures_trip_info_cache';
 
   // Golemio limit: 20 req / 8 s na klíč. Místo pevné pauzy mezi requesty
   // (dřívější RATE_LIMIT_DELAY_MS) appka teď hospodaří s rozpočtem sdíleně
@@ -34,6 +40,51 @@
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // Dnešní kalendářní den v lokálním čase jako "YYYY-MM-DD" (US-13). Cache
+  // GTFS dat se váže na kalendářní den, ne na plovoucí 24h okno od stažení —
+  // GTFS feed se může aktualizovat kdykoli během dne, takže položka stažená
+  // těsně před půlnocí nemá "přežít" do stejného času druhý den.
+  function todayKey() {
+    const d = new Date();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return d.getFullYear() + '-' + mm + '-' + dd;
+  }
+
+  // Načte z localStorage cachovanou hodnotu pro daný dílčí klíč (typicky
+  // stopId), pokud byla uložená dnes (US-13) — jinak null. Víc dílčích
+  // hodnot se drží pohromadě pod jedním localStorage klíčem (storageKey).
+  function loadDayCache(storageKey, subKey) {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return null;
+      const all = JSON.parse(raw);
+      const entry = all[subKey];
+      return entry && entry.cachedDate === todayKey() ? entry.data : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Uloží hodnotu pro daný dílčí klíč s dnešním datem a zároveň zahodí
+  // položky z jiných dnů (US-13) — cache tak neroste donekonečna, drží jen
+  // to, co je relevantní pro dnešek.
+  function saveDayCache(storageKey, subKey, data) {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      const all = raw ? JSON.parse(raw) : {};
+      const today = todayKey();
+      const pruned = {};
+      Object.keys(all).forEach((key) => {
+        if (all[key] && all[key].cachedDate === today) pruned[key] = all[key];
+      });
+      pruned[subKey] = { data, cachedDate: today };
+      localStorage.setItem(storageKey, JSON.stringify(pruned));
+    } catch (e) {
+      console.warn('Nepodařilo se uložit cache', storageKey, e);
+    }
   }
 
   // Gate volaná před každým requestem na Golemio. Pustí hned, pokud je
@@ -109,10 +160,11 @@
   }
 
   // Zajistí, že je k dispozici čerstvý index všech zastávek (stop_name ->
-  // stopIds), a to buď z localStorage (pokud není starší než TTL), nebo
-  // čerstvým stránkovaným stažením celého /gtfs/stops. Bez names[] filtru je
-  // to jediný způsob, jak vyhledávat case-insensitive/částečnou shodou —
-  // Golemio API samo takové vyhledávání nenabízí (jen exaktní název).
+  // stopIds), a to buď z localStorage (pokud je z dnešního kalendářního dne,
+  // US-13), nebo čerstvým stránkovaným stažením celého /gtfs/stops. Bez
+  // names[] filtru je to jediný způsob, jak vyhledávat case-insensitive/
+  // částečnou shodou — Golemio API samo takové vyhledávání nenabízí (jen
+  // exaktní název).
   async function warmStopIndex(apiKey, onProgress) {
     const report = (text) => { if (onProgress) onProgress(text); };
 
@@ -120,7 +172,7 @@
       const raw = localStorage.getItem(STOP_INDEX_KEY);
       if (raw) {
         const cached = JSON.parse(raw);
-        if (cached && Array.isArray(cached.stops) && Date.now() - cached.fetchedAt < STOP_INDEX_TTL_MS) {
+        if (cached && Array.isArray(cached.stops) && cached.cachedDate === todayKey()) {
           stopIndex = cached.stops;
           return;
         }
@@ -146,7 +198,7 @@
     const stops = groupStopsByName(allRows);
     stopIndex = stops;
     try {
-      localStorage.setItem(STOP_INDEX_KEY, JSON.stringify({ stops, fetchedAt: Date.now() }));
+      localStorage.setItem(STOP_INDEX_KEY, JSON.stringify({ stops, cachedDate: todayKey() }));
     } catch (e) {
       console.warn('Nepodařilo se uložit index zastávek', e);
     }
@@ -197,6 +249,9 @@
   // computeAllowedRoutes dál dedupuje podle dvojice route/headsign, ne podle
   // trip_id.
   async function fetchStopSequences(stopId, apiKey) {
+    const cached = loadDayCache(STOP_SEQ_CACHE_KEY, stopId);
+    if (cached) return new Map(cached);
+
     const data = await golemioGet(
       '/gtfs/stoptimes/' + encodeURIComponent(stopId) + '?limit=10000',
       apiKey
@@ -210,6 +265,7 @@
       const prev = map.get(tripId);
       if (prev === undefined || seq < prev) map.set(tripId, seq);
     });
+    saveDayCache(STOP_SEQ_CACHE_KEY, stopId, Array.from(map.entries()));
     return map;
   }
 
@@ -218,6 +274,9 @@
   // konvence). Použito pro dopočet času příjezdu do cílové zastávky (US-8) —
   // na rozdíl od fetchStopSequences nezajímá stop_sequence, ale čas.
   async function fetchStopArrivals(stopId, apiKey) {
+    const cached = loadDayCache(STOP_ARRIVALS_CACHE_KEY, stopId);
+    if (cached) return new Map(cached);
+
     const data = await golemioGet(
       '/gtfs/stoptimes/' + encodeURIComponent(stopId) + '?limit=10000',
       apiKey
@@ -229,6 +288,7 @@
       if (!tripId || !row.arrival_time) return;
       map.set(tripId, row.arrival_time);
     });
+    saveDayCache(STOP_ARRIVALS_CACHE_KEY, stopId, Array.from(map.entries()));
     return map;
   }
 
@@ -306,9 +366,10 @@
   }
 
   // Zajistí index linek (route_id -> route_short_name), z localStorage
-  // (pokud není starší než TTL) nebo čerstvým stažením /gtfs/routes. Seznam
-  // linek celé sítě PID je krátký (stovky záznamů), stačí jedna stránka a
-  // nemá smysl ho stahovat opakovaně pro každý dopočet spojů.
+  // (pokud je z dnešního kalendářního dne, US-13) nebo čerstvým stažením
+  // /gtfs/routes. Seznam linek celé sítě PID je krátký (stovky záznamů),
+  // stačí jedna stránka a nemá smysl ho stahovat opakovaně pro každý
+  // dopočet spojů.
   async function warmRouteIndex(apiKey, onProgress) {
     const report = (text) => { if (onProgress) onProgress(text); };
 
@@ -316,7 +377,7 @@
       const raw = localStorage.getItem(ROUTE_INDEX_KEY);
       if (raw) {
         const cached = JSON.parse(raw);
-        if (cached && Array.isArray(cached.routes) && Date.now() - cached.fetchedAt < ROUTE_INDEX_TTL_MS) {
+        if (cached && Array.isArray(cached.routes) && cached.cachedDate === todayKey()) {
           routeIndex = new Map(cached.routes);
           return;
         }
@@ -333,7 +394,7 @@
       .map((row) => [row.route_id, row.route_short_name || row.route_id]);
     routeIndex = new Map(entries);
     try {
-      localStorage.setItem(ROUTE_INDEX_KEY, JSON.stringify({ routes: entries, fetchedAt: Date.now() }));
+      localStorage.setItem(ROUTE_INDEX_KEY, JSON.stringify({ routes: entries, cachedDate: todayKey() }));
     } catch (e) {
       console.warn('Nepodařilo se uložit index linek', e);
     }
@@ -344,6 +405,9 @@
   // /gtfs/stoptimes to Golemio API vrací přímo bez nutnosti dotazovat každý
   // trip_id zvlášť. Vrátí Map trip_id -> {routeId, headsign}.
   async function fetchTripsForStop(stopId, apiKey) {
+    const cached = loadDayCache(TRIP_INFO_CACHE_KEY, stopId);
+    if (cached) return new Map(cached);
+
     const data = await golemioGet(
       '/gtfs/trips?stopId=' + encodeURIComponent(stopId) + '&limit=10000',
       apiKey
@@ -354,6 +418,7 @@
       if (!row.trip_id) return;
       map.set(row.trip_id, { routeId: row.route_id, headsign: row.trip_headsign || '' });
     });
+    saveDayCache(TRIP_INFO_CACHE_KEY, stopId, Array.from(map.entries()));
     return map;
   }
 
