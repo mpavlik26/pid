@@ -388,6 +388,68 @@ bug v zadání.
 
 ---
 
+## US-13 — Cache jízdního řádu podle jednotlivé stanice
+
+**Kontext:** Příprava na budoucí funkcionalitu využívající historicky
+zadávané dvojice stanic (samostatná pozdější story, zahrnující i úpravu
+UI). Tahle story řeší jen datovou vrstvu — cachování, beze změny UI.
+
+Zavést cache pro statická (nikoli real-time) data dopočtu spojů —
+`computeAllowedRoutes` (jízdní řád výchozí i cílové zastávky přes
+`mergeSequences`/`mergeTripInfo`) a `loadDestinationArrivals`
+(`mergeArrivals`) — v `localStorage`, klíčovanou podle jednotlivého
+stopId, ne podle celé dvojice zastávek. Díky tomu se ušetří i případ, kdy
+se opakuje jen jedna ze stanic (výchozí nebo cílová) s jinou protistranou,
+ne jen při přesné shodě celé dvojice.
+
+Platnost cache se váže na kalendářní den, ne na plovoucí 24h okno od
+stažení. GTFS feed se může aktualizovat kdykoli v průběhu dne — položka
+stažená např. v 23:50 by si při plovoucím TTL "myslela", že je platná až
+do 23:50 druhého dne, přestože feed už mohl mezitím dostat novou verzi.
+Místo `fetchedAt` timestamp + `TTL_MS` porovnání se u téhle cache uloží
+kalendářní datum stažení (lokální, `YYYY-MM-DD`) a položka je platná, jen
+dokud se shoduje s dnešním datem — o půlnoci je tak vždy neplatná bez
+ohledu na to, v kolik hodin byla stažena. Žádná aktivní reakce na přechod
+dne u už otevřené stránky se nevyžaduje — nová cache se prostě založí až
+při příštím requestu po půlnoci.
+
+Zároveň se na stejný princip (kalendářní den místo plovoucího TTL)
+převádí i stávající cache `stopIndex` (`STOP_INDEX_KEY`, US-7) a
+`routeIndex` (`ROUTE_INDEX_KEY`, US-11) — dnešní
+`STOP_INDEX_TTL_MS`/`ROUTE_INDEX_TTL_MS` plovoucí 24h okno má stejnou
+mezeru (možnost přežít půlnoční aktualizaci feedu) a nemá smysl mít v
+appce vedle sebe dva různé modely platnosti cache pro data se stejnou
+charakteristikou (GTFS feed, denní aktualizace).
+
+Skutečné odjezdy (`departureboards`) a poloha vozidla zůstávají beze
+změny — nejsou statická data a nemají se cachovat napříč sezeními.
+
+Bez úpravy UI — zatím se nic uživateli nenabízí ani nezobrazuje, jde jen
+o interní optimalizaci volání API pro budoucí použití.
+
+**Akceptační kritéria**
+
+- Výsledky `mergeSequences`, `mergeTripInfo` a `mergeArrivals` pro daný
+  stopId se ukládají do `localStorage` spolu s kalendářním datem stažení
+  (lokální `YYYY-MM-DD`), ne s timestampem + plovoucím TTL.
+- Při opakovaném dopočtu spojů, kde se aspoň jedna ze zastávek (stopId)
+  shoduje s platnou cachovanou položkou ze stejného kalendářního dne, se
+  pro tu zastávku nevolá Golemio API znovu.
+- `stopIndex` (`STOP_INDEX_KEY`) i `routeIndex` (`ROUTE_INDEX_KEY`) jsou
+  přepsané ze stávajícího `fetchedAt` + `TTL_MS` modelu na stejný model
+  kalendářního dne jako nová cache — platné jen v rámci dne stažení,
+  jinak se stáhnou znovu.
+- Chování appky (zobrazené spoje, časy, vyhledávání zastávek) je funkčně
+  identické jako dnes — jde čistě o interní optimalizaci/zpřesnění
+  invalidace, ne o změnu výstupu.
+- `departureboards` a `vehiclepositions` zůstávají nedotčené (žádná
+  cache, žádná změna).
+- Bez viditelné změny v UI.
+
+**Stav:** Aktivní.
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 
