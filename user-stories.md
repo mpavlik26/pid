@@ -286,6 +286,71 @@ Přiložený náčrtek (přepis rukopisu):
 
 ---
 
+## US-10-bug-fixes — Oprava: čas příjezdu se nikdy nenačte
+
+Tohle není nová user story, ale záznam opravy chyby v chování zadaném v
+US-10 (lazy load příjezdového času) — zapsáno jako reference na branch
+`US-10-bug-fixes`.
+
+Hlášení uživatele (doslovné znění):
+
+> Kdyz si s appkou hraji, tak vidim, ze zlobi nacitani casu prijezdu.
+> Nefunguje ani lazy loading. Prijezdovy cas se proste nedonacte. Vsechno
+> ostatni je v pohode (vcetne informace o tom, jak je stara informace o
+> aktualni poloze vozu).
+
+**Příčina:** `loadDestinationArrivals()` (US-8) se volala přesně jednou při
+nastavení dvojice zastávek, souběžně s dalšími požadavky sdílejícími Golemio
+rate limit (`fetchDepartures()`, první `refreshVehiclePositions()`). Jediné
+přechodné selhání (např. kolize s rate limitem hned po startu appky) natrvalo
+vypnulo dotahování příjezdového času pro zbytek session, bez jakékoli další
+šance — na rozdíl od polohy vozidla, která se zkouší znovu při každém
+refreshi a při selhání jen ponechá poslední známou hodnotu.
+
+**Oprava**
+- `destinationArrivalsLoaded` se nastaví na `true` jen po úspěšném načtení,
+  ne po každém pokusu (dřív se nastavovalo vždy, i po chybě).
+- Dokud se načtení nepovede, `fetchDepartures()` ho při každém auto-refreshi
+  (stejná 30s kadence jako u polohy vozidla) zkusí znovu — žádný nový časovač.
+- Přidán `destinationArrivalsInFlight` (ochrana proti souběžným pokusům) a
+  `arrivalsGeneration` (při změně dvojice zastávek se doběhnutí starého,
+  ještě běžícího pokusu pozná jako zastaralé a jeho výsledek se zahodí,
+  místo aby přepsal už načtená data nové dvojice).
+- Chyba 401/403 (neplatný API klíč) se řeší stejně jako jinde v appce —
+  vrátí uživatele na obrazovku zadání klíče.
+
+**Stav:** Opraveno.
+
+---
+
+## US-11 — Chytré hospodaření s Golemio rate limitem
+
+Moc by se mi líbilo, kdyby appka obecně fungovala tak, že půjde na hranu
+nějakých procent limitů rate limittingu. Tedy kdyby si počítala počet
+requestů v daném okně a chytře s nimi hospodařila. A tím chytře míním to, že
+by se ptala častěji, když může (protože se do limitu v pohodě vejde) a
+zároveň se na chvíli dotazování zastavilo, pokud narazíme na "virtuální"
+nebo i tvrdý 429 limit.
+
+**Akceptační kritéria**
+
+- Appka počítá požadavky na Golemio v rolling okně 8 s (limit klíče:
+  20 req/8 s) sdíleně napříč VŠEMI voláními (odjezdy, poloha vozidla,
+  dopočet povolených linek, příjezdové časy) — ne izolovaně po funkcích.
+- Dokud je v okně volná kapacita (do ~90 % tvrdého limitu), appka se ptá
+  ihned, bez umělé pevné pauzy mezi requesty.
+- Po dosažení měkkého limitu appka počká jen tak dlouho, dokud nejstarší
+  request z okna nevypadne — ne o víc.
+- Na HTTP 429 appka počká (podle `Retry-After` headeru, jinak celé okno) a
+  automaticky požadavek zopakuje (max. 3 pokusy), místo aby rovnou celou
+  operaci shodila jako obecnou chybu.
+- Chování appky při neplatném API klíči (401/403) i při dlouhodobé
+  nedostupnosti Golemio se nemění.
+
+**Stav:** Aktivní.
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 

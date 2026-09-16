@@ -10,7 +10,13 @@
   const STOP_INDEX_MAX_PAGES = 5; // bezpečnostní strop proti nekonečné stránkované smyčce
   const ROUTE_INDEX_KEY = 'pid_departures_route_index';
   const ROUTE_INDEX_TTL_MS = 24 * 60 * 60 * 1000; // GTFS feed se aktualizuje denně
-  const RATE_LIMIT_DELAY_MS = 420; // Golemio limit: 20 req / 8 s na klíč
+
+  // Golemio limit: 20 req / 8 s na klíč. Místo pevné pauzy mezi requesty
+  // (dřívější RATE_LIMIT_DELAY_MS) appka teď hospodaří s rozpočtem sdíleně
+  // napříč VŠEMI voláními na Golemio (viz acquireSlot/golemioGet, US-11) —
+  // ptá se tak často, jak to okno dovolí, a čeká jen když je skutečně plné.
+  const RATE_WINDOW_MS = 8000;
+  const RATE_SOFT_LIMIT = 18; // 90 % tvrdého limitu — rezerva na drobný skew
 
   // V paměti držený index všech zastávek (stop_name -> stopIds) pro
   // rychlé, case-insensitive vyhledávání na klientovi — viz warmStopIndex.
@@ -21,20 +27,61 @@
   // název linky, který appka zobrazuje a se kterým porovnává departureboards.
   let routeIndex = null;
 
+  // Sdílený stav rate governoru (US-11): timestampy požadavků povolených
+  // v aktuálním okně + do kdy případně čekat po 429 (viz golemioGet).
+  let requestLog = [];
+  let cooldownUntil = 0;
+
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  async function golemioGet(path, apiKey) {
-    const res = await fetch(API_BASE + path, {
-      headers: { 'X-Access-Token': apiKey }
-    });
-    if (!res.ok) {
-      const err = new Error('Golemio API chyba ' + res.status);
-      err.status = res.status;
-      throw err;
+  // Gate volaná před každým requestem na Golemio. Pustí hned, pokud je
+  // v posledních RATE_WINDOW_MS méně než RATE_SOFT_LIMIT požadavků; jinak
+  // počká, dokud nejstarší z okna nevypadne. Respektuje i cooldown nastavený
+  // po 429 (viz golemioGet) — po dobu cooldownu nepustí nic.
+  async function acquireSlot() {
+    for (;;) {
+      const now = Date.now();
+      if (now < cooldownUntil) {
+        await sleep(cooldownUntil - now);
+        continue;
+      }
+      const cutoff = now - RATE_WINDOW_MS;
+      while (requestLog.length && requestLog[0] <= cutoff) requestLog.shift();
+      if (requestLog.length < RATE_SOFT_LIMIT) {
+        requestLog.push(now);
+        return;
+      }
+      await sleep(Math.max(requestLog[0] + RATE_WINDOW_MS - now, 10));
     }
-    return res.json();
+  }
+
+  // Jediné místo, odkud appka mluví s Golemio API — každé volání jde přes
+  // acquireSlot (proaktivní pacing) a na 429 samo počká a zkusí to znovu
+  // (reaktivní cooldown, podle Retry-After headeru, jinak celé okno), než
+  // chybu nechá probublat volajícímu. Volající tak 429 prakticky nikdy
+  // neuvidí, pokud Golemio není nedostupné dlouhodobě (US-11).
+  async function golemioGet(path, apiKey) {
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      await acquireSlot();
+      const res = await fetch(API_BASE + path, {
+        headers: { 'X-Access-Token': apiKey }
+      });
+      if (res.status === 429 && attempt < maxAttempts) {
+        const retryAfterSec = Number(res.headers.get('Retry-After'));
+        cooldownUntil = Date.now() + (retryAfterSec > 0 ? retryAfterSec * 1000 : RATE_WINDOW_MS);
+        console.warn('Golemio API 429, čekám před dalším pokusem');
+        continue;
+      }
+      if (!res.ok) {
+        const err = new Error('Golemio API chyba ' + res.status);
+        err.status = res.status;
+        throw err;
+      }
+      return res.json();
+    }
   }
 
   // Golemio GTFS endpointy vrací GeoJSON FeatureCollection — properties
@@ -94,7 +141,6 @@
       allRows.push(...rows);
       report('Stahuji seznam zastávek… (' + allRows.length + ')');
       if (rows.length < STOP_INDEX_PAGE_LIMIT) break;
-      await sleep(RATE_LIMIT_DELAY_MS);
     }
 
     const stops = groupStopsByName(allRows);
@@ -170,14 +216,13 @@
     return map;
   }
 
-  // Viz mergeSequences — stejný důvod pro pauzu mezi nástupišti cílové
-  // zastávky (rate limit).
+  // Sekvenční dotazy přes všechna nástupiště cílové zastávky — rate limit
+  // hlídá sdíleně golemioGet (viz acquireSlot), tady se jen sčítají výsledky.
   async function mergeArrivals(stopIds, apiKey) {
     const merged = new Map();
     for (let i = 0; i < stopIds.length; i++) {
       const arrivals = await fetchStopArrivals(stopIds[i], apiKey);
       arrivals.forEach((time, tripId) => merged.set(tripId, time));
-      if (i < stopIds.length - 1) await sleep(RATE_LIMIT_DELAY_MS);
     }
     return merged;
   }
@@ -212,30 +257,26 @@
     }
   }
 
-  // Znovu ověří polohu vozidla pro víc spojů sekvenčně, s pauzou kvůli rate
-  // limitu (stejný vzor jako mergeArrivals/mergeSequences). Volá se s KAŽDÝM
-  // refreshem seznamu spojů pro všechny aktuálně sledované spoje (US-8
-  // zpětná vazba: jednorázové zjištění polohy nestačí, potřeba průběžně
-  // ověřovat, jak moc je poslední známý údaj čerstvý). Výsledek jednoho
-  // spoje se hlásí přes onResult(tripId, date|null) hned po dotazu, aby
-  // volající (app.js) mohl průběžně promítat nové hodnoty do UI bez čekání
-  // na celou dávku. Chyba 401/403 z fetchVehiclePosition přeruší dávku a
-  // probublá volajícímu.
+  // Znovu ověří polohu vozidla pro víc spojů sekvenčně — rate limit hlídá
+  // sdíleně golemioGet (viz acquireSlot). Volá se s KAŽDÝM refreshem seznamu
+  // spojů pro všechny aktuálně sledované spoje (US-8 zpětná vazba: jednorázové
+  // zjištění polohy nestačí, potřeba průběžně ověřovat, jak moc je poslední
+  // známý údaj čerstvý). Výsledek jednoho spoje se hlásí přes
+  // onResult(tripId, date|null) hned po dotazu, aby volající (app.js) mohl
+  // průběžně promítat nové hodnoty do UI bez čekání na celou dávku. Chyba
+  // 401/403 z fetchVehiclePosition přeruší dávku a probublá volajícímu.
   async function fetchVehiclePositions(tripIds, apiKey, onResult) {
     for (let i = 0; i < tripIds.length; i++) {
       const tripId = tripIds[i];
       const result = await fetchVehiclePosition(tripId, apiKey);
       if (onResult) onResult(tripId, result);
-      if (i < tripIds.length - 1) await sleep(RATE_LIMIT_DELAY_MS);
     }
   }
 
   // Přestupní uzly (typicky metro) mají pod stejným stop_name desítky
-  // nástupišť/směrů (samostatné stop_id) — bez pauzy mezi requesty by se
-  // snadno překročil Golemio rate limit (20 req / 8 s na klíč) a API by
-  // odpovědělo 429, což computeAllowedRoutes shodí jako obecnou chybu. U
-  // běžné tramvajové/autobusové zastávky (1-2 stopId) tahle pauza prakticky
-  // nic nezpomalí.
+  // nástupišť/směrů (samostatné stop_id) — golemioGet tyhle requesty sdíleně
+  // rozpočítá (viz acquireSlot), takže i u velkých uzlů appka nepřekročí
+  // Golemio rate limit (20 req / 8 s na klíč).
   async function mergeSequences(stopIds, apiKey) {
     const merged = new Map();
     for (let i = 0; i < stopIds.length; i++) {
@@ -244,7 +285,6 @@
         const prev = merged.get(tripId);
         if (prev === undefined || seq < prev) merged.set(tripId, seq);
       });
-      if (i < stopIds.length - 1) await sleep(RATE_LIMIT_DELAY_MS);
     }
     return merged;
   }
@@ -308,7 +348,6 @@
       infos.forEach((info, tripId) => {
         if (!merged.has(tripId)) merged.set(tripId, info);
       });
-      if (i < stopIds.length - 1) await sleep(RATE_LIMIT_DELAY_MS);
     }
     return merged;
   }
@@ -386,6 +425,7 @@
     computeAllowedRoutes,
     loadDestinationArrivals,
     fetchVehiclePositions,
+    golemioGet,
     loadStopPair,
     saveStopPair,
     clearStopPair
