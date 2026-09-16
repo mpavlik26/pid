@@ -152,23 +152,39 @@
     }
   }
 
-  // Vyhledá zastávky podle názvu, case-insensitive a částečnou shodou, nad
-  // klientským indexem (viz warmStopIndex) — ne dotazem na server.
+  // Odstraní diakritiku a převede na malá písmena (US-12) — ať se dá hledat
+  // "budejovicka" i pro zastávku "Budějovická".
+  function foldDiacritics(s) {
+    return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  }
+
+  // Vyhledá zastávky podle názvu, bez diakritiky a podle začátků
+  // jednotlivých slov (US-12), nad klientským indexem (viz warmStopIndex) —
+  // ne dotazem na server. Dotaz se rozdělí na tokeny podle mezer a každý
+  // token musí být prefixem některého (dalšího, v pořadí zleva doprava)
+  // slova z názvu zastávky — např. "pol b" tak najde "Poliklinika
+  // Budějovická" i "Poliklinika Barrandov", ne jen shodu od úplného začátku
+  // názvu. Pomlčka v názvu zastávky se chová jako další oddělovač slov
+  // (rozšíření US-12) — "Praha-Libeň" se tak dá najít i jako "p li".
+  // Výsledky se vrací seřazené abecedně.
   async function searchStops(query, apiKey) {
-    const q = query.trim().toLowerCase();
-    if (!q) return [];
+    const tokens = foldDiacritics(query.trim()).split(/[\s-]+/).filter(Boolean);
+    if (!tokens.length) return [];
     if (!stopIndex) await warmStopIndex(apiKey);
 
-    const startsWith = [];
-    const contains = [];
-    stopIndex.forEach((stop) => {
-      const lower = stop.name.toLowerCase();
-      const idx = lower.indexOf(q);
-      if (idx === 0) startsWith.push(stop);
-      else if (idx > 0) contains.push(stop);
+    const matches = stopIndex.filter((stop) => {
+      const words = foldDiacritics(stop.name).split(/[\s-]+/).filter(Boolean);
+      let from = 0;
+      return tokens.every((token) => {
+        const idx = words.findIndex((w, i) => i >= from && w.startsWith(token));
+        if (idx === -1) return false;
+        from = idx + 1;
+        return true;
+      });
     });
 
-    return startsWith.concat(contains).slice(0, 25);
+    matches.sort((a, b) => a.name.localeCompare(b.name, 'cs'));
+    return matches.slice(0, 25);
   }
 
   // Stáhne stop_times pro danou zastávku (bez date filtru = celé okno

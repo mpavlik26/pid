@@ -351,6 +351,43 @@ nebo i tvrdý 429 limit.
 
 ---
 
+## US-12 — Vylepšené vyhledávání dvojice stanic
+
+V další user story bych se rád zabýval zlepšením vyhledávání dvojice stanic.
+Chtěl bych tyto základní funkcionality:
+
+- seřazení stanic z dropdownu podle abecedy
+- schopnost fungovat i bez diakritiky
+- vyhledávání filtrující stanice i jen podle začátků slov
+  - např. "pol b" automaticky povede k filtru jen na "poliklinika
+    budějovická" a "poliklinika barrandov"; dnes musím zadat, abych dostal
+    tento výsledek "poliklinika b" - tedy celé první slovo (resp. kompletní
+    levý substring)
+
+Dodatek k zadání: ocenil bych, kdyby se podobně jako mezery v názvu chovaly
+i pomlčky. Např. u stanice "Praha-Libeň" by bylo skvělé, kdyby fungoval
+filtr po napsání "p li". To není bug, to je jen rozšíření zadání - takže
+bug v zadání.
+
+**Akceptační kritéria**
+
+- Výsledky vyhledávání zastávek (dropdown nápovědy u obou polí) jsou seřazené
+  abecedně, ne podle relevance shody jako dřív.
+- Vyhledávání funguje bez ohledu na diakritiku — dotaz i bez diakritiky
+  (např. "budejovicka") najde zastávky s diakritikou ("Budějovická").
+- Dotaz se dělí na tokeny podle mezer; každý token musí být prefixem
+  některého slova z názvu zastávky (slova se procházejí zleva doprava,
+  jeden token = jedno slovo). Např. "pol b" tak najde "Poliklinika
+  Budějovická" i "Poliklinika Barrandov" — nestačí už jen shoda od úplného
+  začátku názvu zastávky.
+- Pomlčka v názvu zastávky se chová jako další oddělovač slov — např.
+  "Praha-Libeň" se dá najít i zadáním "p li" (dvě samostatná slova).
+- Limit 25 zobrazených výsledků zůstává zachován.
+
+**Stav:** Aktivní.
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 
