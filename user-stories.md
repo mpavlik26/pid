@@ -351,6 +351,27 @@ nebo i tvrdý 429 limit.
 
 ---
 
+## US-12 — Vylepšené vyhledávání dvojice stanic
+
+V další user story bych se rád zabýval zlepšením vyhledávání dvojice stanic.
+Chtěl bych tyto základní funkcionality:
+
+- seřazení stanic z dropdownu podle abecedy
+- schopnost fungovat i bez diakritiky
+- vyhledávání filtrující stanice i jen podle začátků slov
+  - např. "pol b" automaticky povede k filtru jen na "poliklinika
+    budějovická" a "poliklinika barrandov"; dnes musím zadat, abych dostal
+    tento výsledek "poliklinika b" - tedy celé první slovo (resp. kompletní
+    levý substring)
+
+**Akceptační kritéria**
+
+_Doplní se po upřesnění návrhu řešení._
+
+**Stav:** Návrh se připravuje.
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 
