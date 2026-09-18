@@ -541,6 +541,37 @@ jízdní řády z US-13) — ty čas od času vyčerpaly zbytek dostupné kvóty
 
 ---
 
+## US-15 — Skryté ladicí zobrazení velikostí klíčů v localStorage
+
+**Zadání (doslovně):** jj, libilo by se mi, kdyby po 5 kliknutich na cislo
+verze v zapati stranky byly zobrazeny informace o velikosti jednotlivych
+klicu v LOCAL storage.
+
+**Kontext:** Vzniklo při ladění [[US-14-bug-fixes]] (localStorage plná na
+mobilu) — uživatel chtěl bez zásahu do konzole prohlížeče zjistit, kolik
+místa který klíč v localStorage skutečně zabírá, aby ověřil, jak velký je
+`STOP_INDEX_KEY` a další cache oproti uživatelským datům (oblíbené,
+naposledy použité).
+
+**Akceptační kritéria**
+- Číslo verze v patičce (`#appVersion`) reaguje na 5 kliknutí během krátkého
+  časového okna (např. 3 s) — při pomalejším/přerušeném klikání se počítadlo
+  vynuluje.
+- Po 5. kliknutí se zobrazí přehled: pro každý klíč aktuálně přítomný v
+  `localStorage` název klíče a jeho velikost v bytech (součet délky klíče a
+  hodnoty, jak je reálně uložená), seřazený od největšího po nejmenší, a
+  celkový součet za všechny klíče.
+- Přehled je čitelný i na mobilu (např. jednoduchý seznam v modálním
+  panelu), jde ho zase zavřít.
+- Nejde o trvale viditelnou součást UI — bez těch 5 kliknutí se nic
+  nezobrazuje a běžné používání appky se nijak nemění.
+- Žádná změna v tom, co a jak se do localStorage ukládá — jde čistě o
+  read-only diagnostický náhled.
+
+**Stav:** Aktivní.
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 
