@@ -46,6 +46,13 @@
   let fromSearchResults = [];
   let toSearchResults = [];
 
+  // US-14: aktuálně aktivní dvojice zastávek jako celý objekt (from/to/allowed),
+  // ne jen odvozený BOARD_CONFIG — potřeba pro hvězdičkové tlačítko a pro
+  // zápis do "naposledy použité" při každé aktivaci (viz activatePair).
+  let currentPair = null;
+  let favoritePairsData = [];
+  let recentPairsData = [];
+
   const setupScreen = document.getElementById('setupScreen');
   const pickerScreen = document.getElementById('pickerScreen');
   const mainScreen = document.getElementById('mainScreen');
@@ -65,6 +72,11 @@
   const refreshBtn = document.getElementById('refreshBtn');
   const changeKeyBtn = document.getElementById('changeKeyBtn');
   const changeStopsBtn = document.getElementById('changeStopsBtn');
+  const toggleFavoriteBtn = document.getElementById('toggleFavoriteBtn');
+  const favoritePairsSection = document.getElementById('favoritePairsSection');
+  const favoritePairsList = document.getElementById('favoritePairsList');
+  const recentPairsSection = document.getElementById('recentPairsSection');
+  const recentPairsList = document.getElementById('recentPairsList');
   const titleEl = document.getElementById('boardTitle');
   const versionEl = document.getElementById('appVersion');
   if (versionEl) versionEl.textContent = 'verze ' + APP_VERSION;
@@ -108,6 +120,7 @@
     setupScreen.style.display = 'none';
     mainScreen.style.display = 'none';
     pickerScreen.style.display = 'block';
+    renderPairShortcuts();
     if (message){
       pickerError.textContent = message;
       pickerError.style.display = 'block';
@@ -115,6 +128,99 @@
       pickerError.style.display = 'none';
       warmPickerIndex();
     }
+  }
+
+  function renderPairList(listEl, pairs, withStar){
+    listEl.innerHTML = pairs.map((pair, i) => {
+      const label = `${escapeHtml(pair.from.name)} <span class="arrow">→</span> ${escapeHtml(pair.to.name)}`;
+      const star = withStar
+        ? `<button class="pair-star-toggle" data-idx="${i}" title="Odebrat z oblíbených">★</button>`
+        : '';
+      return `<li><span class="pair-name" data-idx="${i}">${label}</span>${star}</li>`;
+    }).join('');
+  }
+
+  // Naplní na pickeru sekce "Oblíbené dvojice" a "Naposledy použité" (US-14),
+  // obě skryté, pokud jsou prázdné. Volá se při každém vstupu do pickeru, aby
+  // byly vždy čerstvé (např. po hvězdičkování na hlavní obrazovce).
+  function renderPairShortcuts(){
+    favoritePairsData = Connections.loadFavoritePairs();
+    recentPairsData = Connections.loadRecentPairs();
+
+    favoritePairsSection.style.display = favoritePairsData.length ? 'block' : 'none';
+    renderPairList(favoritePairsList, favoritePairsData, true);
+
+    recentPairsSection.style.display = recentPairsData.length ? 'block' : 'none';
+    renderPairList(recentPairsList, recentPairsData, false);
+  }
+
+  favoritePairsList.addEventListener('click', (e) => {
+    const starBtn = e.target.closest('.pair-star-toggle');
+    if (starBtn){
+      const pair = favoritePairsData[Number(starBtn.dataset.idx)];
+      if (pair){
+        Connections.removeFavoritePair(pair);
+        renderPairShortcuts();
+      }
+      return;
+    }
+    const nameEl = e.target.closest('.pair-name');
+    if (nameEl){
+      const pair = favoritePairsData[Number(nameEl.dataset.idx)];
+      if (pair) activatePair(pair);
+    }
+  });
+
+  recentPairsList.addEventListener('click', (e) => {
+    const nameEl = e.target.closest('.pair-name');
+    if (nameEl){
+      const pair = recentPairsData[Number(nameEl.dataset.idx)];
+      if (pair) activatePair(pair);
+    }
+  });
+
+  function updateFavoriteButtonState(){
+    const favorited = !!currentPair && Connections.isFavoritePair(currentPair);
+    toggleFavoriteBtn.textContent = favorited ? '★' : '☆';
+    toggleFavoriteBtn.setAttribute('aria-pressed', String(favorited));
+  }
+
+  toggleFavoriteBtn.addEventListener('click', () => {
+    if (!currentPair) return;
+    if (Connections.isFavoritePair(currentPair)){
+      Connections.removeFavoritePair(currentPair);
+    } else {
+      Connections.addFavoritePair(currentPair);
+    }
+    updateFavoriteButtonState();
+  });
+
+  // Aktivuje danou dvojici zastávek jako aktuální (US-14) — ať už přišla
+  // z formuláře Odkud/Kam, z automatického naběhnutí appky na uloženou
+  // dvojici, nebo z výběru z oblíbených/naposledy použitých. Vždy zapíše
+  // dvojici do "naposledy použité" a nastaví ji jako aktivní (STOP_PAIR_KEY) —
+  // routy (pair.allowed) se přebírají z dvojice beze změny, nepřepočítávají se.
+  function activatePair(pair){
+    currentPair = pair;
+    Connections.saveStopPair(pair);
+    Connections.pushRecentPair(pair);
+    BOARD_CONFIG = {
+      fromLabel: pair.from.name,
+      toLabel: pair.to.name,
+      stopIds: pair.from.stopIds,
+      toStopIds: pair.to.stopIds,
+      allowed: pair.allowed
+    };
+    setTitle(BOARD_CONFIG);
+    updateFavoriteButtonState();
+    showMain();
+    destinationArrivals = new Map();
+    destinationArrivalsLoaded = false;
+    destinationArrivalsInFlight = false;
+    arrivalsGeneration++;
+    loadDestinationArrivals();
+    fetchDepartures();
+    startTimer();
   }
 
   // Zahřeje klientský index zastávek (viz Connections.warmStopIndex), aby
@@ -176,22 +282,7 @@
   function proceedAfterAuth(){
     const pair = Connections.loadStopPair();
     if (pair && pair.from && pair.to && pair.allowed && pair.allowed.length){
-      BOARD_CONFIG = {
-        fromLabel: pair.from.name,
-        toLabel: pair.to.name,
-        stopIds: pair.from.stopIds,
-        toStopIds: pair.to.stopIds,
-        allowed: pair.allowed
-      };
-      setTitle(BOARD_CONFIG);
-      showMain();
-      destinationArrivals = new Map();
-      destinationArrivalsLoaded = false;
-      destinationArrivalsInFlight = false;
-      arrivalsGeneration++;
-      loadDestinationArrivals();
-      fetchDepartures();
-      startTimer();
+      activatePair(pair);
     } else {
       showPicker();
     }
@@ -225,6 +316,7 @@
     stopTimer();
     Connections.clearStopPair();
     BOARD_CONFIG = null;
+    currentPair = null;
     selectedFrom = null;
     selectedTo = null;
     fromInput.value = '';
@@ -317,28 +409,12 @@
         showPicker('Mezi těmito zastávkami nejede žádný přímý spoj. Zkuste jinou dvojici.');
         return;
       }
-      Connections.saveStopPair({
+      activatePair({
         from: selectedFrom,
         to: selectedTo,
         allowed,
         computedAt: new Date().toISOString()
       });
-      BOARD_CONFIG = {
-        fromLabel: selectedFrom.name,
-        toLabel: selectedTo.name,
-        stopIds: selectedFrom.stopIds,
-        toStopIds: selectedTo.stopIds,
-        allowed
-      };
-      setTitle(BOARD_CONFIG);
-      showMain();
-      destinationArrivals = new Map();
-      destinationArrivalsLoaded = false;
-      destinationArrivalsInFlight = false;
-      arrivalsGeneration++;
-      loadDestinationArrivals();
-      fetchDepartures();
-      startTimer();
     }catch(e){
       console.error(e);
       if (e.status === 401 || e.status === 403){

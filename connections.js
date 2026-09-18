@@ -4,6 +4,14 @@
 (function () {
   const API_BASE = 'https://api.golemio.cz/v2';
   const STOP_PAIR_KEY = 'pid_departures_stop_pair';
+
+  // Oblíbené a naposledy použité dvojice zastávek (US-14) — na rozdíl od
+  // STOP_PAIR_KEY (jediná AKTUÁLNÍ dvojice) tohle jsou seznamy víc dvojic,
+  // viz loadFavoritePairs/loadRecentPairs níže.
+  const STOP_PAIR_FAVORITES_KEY = 'pid_departures_stop_pair_favorites';
+  const STOP_PAIR_RECENTS_KEY = 'pid_departures_stop_pair_recents';
+  const RECENT_PAIRS_MAX = 10;
+
   const STOP_INDEX_KEY = 'pid_departures_stop_index';
   const STOP_INDEX_PAGE_LIMIT = 10000;
   const STOP_INDEX_MAX_PAGES = 5; // bezpečnostní strop proti nekonečné stránkované smyčce
@@ -500,6 +508,82 @@
     try { localStorage.removeItem(STOP_PAIR_KEY); } catch (e) {}
   }
 
+  // Identita dvojice pro oblíbené/naposledy použité (US-14) — podle názvu
+  // zastávek, ne podle stopIds, protože i řazení oblíbených je požadované
+  // podle názvu (viz sortPairsAlphabetically).
+  function pairKey(pair) {
+    return pair.from.name + '|' + pair.to.name;
+  }
+
+  function sortPairsAlphabetically(pairs) {
+    return pairs.slice().sort((a, b) => {
+      const byFrom = a.from.name.localeCompare(b.from.name, 'cs');
+      return byFrom !== 0 ? byFrom : a.to.name.localeCompare(b.to.name, 'cs');
+    });
+  }
+
+  function loadFavoritePairs() {
+    try {
+      const raw = localStorage.getItem(STOP_PAIR_FAVORITES_KEY);
+      const pairs = raw ? JSON.parse(raw) : [];
+      return sortPairsAlphabetically(Array.isArray(pairs) ? pairs : []);
+    } catch (e) {
+      console.warn('Nepodařilo se načíst oblíbené dvojice zastávek', e);
+      return [];
+    }
+  }
+
+  function saveFavoritePairs(pairs) {
+    try {
+      localStorage.setItem(STOP_PAIR_FAVORITES_KEY, JSON.stringify(sortPairsAlphabetically(pairs)));
+    } catch (e) {
+      console.warn('Nepodařilo se uložit oblíbené dvojice zastávek', e);
+    }
+  }
+
+  function isFavoritePair(pair) {
+    const key = pairKey(pair);
+    return loadFavoritePairs().some((p) => pairKey(p) === key);
+  }
+
+  function addFavoritePair(pair) {
+    const key = pairKey(pair);
+    const pairs = loadFavoritePairs().filter((p) => pairKey(p) !== key);
+    pairs.push(pair);
+    saveFavoritePairs(pairs);
+  }
+
+  function removeFavoritePair(pair) {
+    const key = pairKey(pair);
+    saveFavoritePairs(loadFavoritePairs().filter((p) => pairKey(p) !== key));
+  }
+
+  function loadRecentPairs() {
+    try {
+      const raw = localStorage.getItem(STOP_PAIR_RECENTS_KEY);
+      const pairs = raw ? JSON.parse(raw) : [];
+      return Array.isArray(pairs) ? pairs : [];
+    } catch (e) {
+      console.warn('Nepodařilo se načíst naposledy použité dvojice zastávek', e);
+      return [];
+    }
+  }
+
+  // Přidá dvojici na začátek seznamu naposledy použitých (US-14). Pokud tam
+  // stejná dvojice (podle názvu) už je, přesune se na začátek místo vzniku
+  // duplicity. Ořízne na RECENT_PAIRS_MAX — nejstarší položka tiše vypadne,
+  // žádné ruční mazání není potřeba (viz user-stories.md).
+  function pushRecentPair(pair) {
+    const key = pairKey(pair);
+    const pairs = loadRecentPairs().filter((p) => pairKey(p) !== key);
+    pairs.unshift(pair);
+    try {
+      localStorage.setItem(STOP_PAIR_RECENTS_KEY, JSON.stringify(pairs.slice(0, RECENT_PAIRS_MAX)));
+    } catch (e) {
+      console.warn('Nepodařilo se uložit naposledy použité dvojice zastávek', e);
+    }
+  }
+
   window.Connections = {
     searchStops,
     warmStopIndex,
@@ -509,6 +593,12 @@
     golemioGet,
     loadStopPair,
     saveStopPair,
-    clearStopPair
+    clearStopPair,
+    loadFavoritePairs,
+    addFavoritePair,
+    removeFavoritePair,
+    isFavoritePair,
+    loadRecentPairs,
+    pushRecentPair
   };
 })();

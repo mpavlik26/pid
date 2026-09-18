@@ -450,6 +450,52 @@ o interní optimalizaci volání API pro budoucí použití.
 
 ---
 
+## US-14 — Oblíbené a nedávné dvojice zastávek
+
+**Zadání (doslovně):** Tak teď můžeme přejít k té UI části. Chtěl bych link
+na změnu dvojic zastávek, mezi kterými se hledá spojení přesunout do horní
+části obrazovky (možná by bylo lepší tlačítko než link). Po jeho stlačení
+bude k dispozici obrazovka s možností výběru dvojic zastávek (taková, jaká
+se zobrazuje již dnes). Bude ale obohacená o možnost vybrat si dvojice z
+uloženého seznamu či 10 posledních dvojic. Uložený seznam bude obsahovat
+dvojice seřazené abecedně, kde 1. klíčem je 1. stanice a 2. klíčem pro
+třízení je 2. stanice z dvojice. Navrhni, jak přidat dvojice stanic do
+uloženého seznamu. Napadá mě, že uložený seznam je něco jako oblíbené
+dvojice stanic a jde tedy o hvěždičkování (u stránky s výpisem spojů tak
+může snadno jen příbýt hvězdička, která automaticky přidá danou dvojici do
+uloženého seznamu.) Ze seznamu uložených dvojic je možné dvojice odstranit
+jednoduše odhvězdičkováním.
+
+**Akceptační kritéria**
+- Tlačítko „změnit zastávky" je přesunuté z patičky na horní lištu hlavní
+  obrazovky s odjezdy, vizuálně jako výrazné tlačítko (ne jako podtržený
+  link, jak dnes vypadá `.change-key`).
+- Vedle něj na hlavní obrazovce je hvězdičkové tlačítko pro přidání/odebrání
+  aktuálně zobrazené dvojice zastávek do/z oblíbených.
+- Obrazovka výběru dvojice zastávek nad stávajícím formulářem Odkud/Kam
+  nabízí (pokud nejsou prázdné):
+  - sekci „Oblíbené dvojice" seřazenou abecedně (1. klíč: název zastávky
+    Odkud, 2. klíč: název zastávky Kam) — každá položka je klikací
+    (aktivuje danou dvojici) a má hvězdičku pro odebrání z oblíbených;
+  - sekci „Naposledy použité" (max 10, řazeno od nejnovější po nejstarší)
+    — každá položka je klikací (aktivuje danou dvojici), bez hvězdičky.
+- Formulář Odkud/Kam zůstává funkčně beze změny.
+- Dvojice se přidá do „naposledy použité" pokaždé, když se stane aktivní —
+  včetně automatického naběhnutí appky na uloženou dvojici při startu,
+  přes tlačítko „Zjistit spoje", i výběrem z oblíbených/naposledy použitých.
+- Do oblíbených lze dvojici přidat pouze z hlavní obrazovky (po zobrazení
+  výpisu spojů), ne přímo ze seznamu „naposledy použité".
+- Ze seznamu „naposledy použité" nejde nic ručně mazat — je to čistě
+  rolující okno posledních 10 položek, nejstarší tiše vypadne při přidání
+  jedenácté.
+- Znovupoužití dvojice z oblíbených/naposledy použitých nepřepočítává
+  povolené linky (`allowed`) — použije se dřív spočtená a uložená cache,
+  stejně jako dnes dělá `loadStopPair()`.
+
+**Stav:** Aktivní.
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 
