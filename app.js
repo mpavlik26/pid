@@ -81,6 +81,10 @@
   const titleEl = document.getElementById('boardTitle');
   const versionEl = document.getElementById('appVersion');
   if (versionEl) versionEl.textContent = 'verze ' + APP_VERSION;
+  const debugOverlay = document.getElementById('debugOverlay');
+  const debugList = document.getElementById('debugList');
+  const debugTotal = document.getElementById('debugTotal');
+  const debugCloseBtn = document.getElementById('debugCloseBtn');
 
   function escapeHtml(s){
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -347,6 +351,53 @@
   });
 
   refreshBtn.addEventListener('click', () => fetchDepartures());
+
+  // US-15: skryté ladicí zobrazení velikostí klíčů v localStorage — 5 kliknutí
+  // na číslo verze v patičce během 3 s. Pomalejší/přerušené klikání počítadlo
+  // vynuluje, ať se to nespustí náhodou při běžném používání appky.
+  const DEBUG_CLICKS_NEEDED = 5;
+  const DEBUG_CLICK_WINDOW_MS = 3000;
+  let debugClickCount = 0;
+  let debugClickTimer = null;
+
+  function formatBytes(n){
+    return n >= 1024 ? (n / 1024).toFixed(1) + ' kB' : n + ' B';
+  }
+
+  function showStorageDebug(){
+    const rows = Object.keys(localStorage).map((key) => {
+      const size = new Blob([key]).size + new Blob([localStorage.getItem(key)]).size;
+      return { key, size };
+    }).sort((a, b) => b.size - a.size);
+
+    debugList.innerHTML = rows.map((row) =>
+      '<li><span class="debug-key">' + escapeHtml(row.key) + '</span>' +
+      '<span class="debug-size">' + formatBytes(row.size) + '</span></li>'
+    ).join('');
+
+    const total = rows.reduce((sum, row) => sum + row.size, 0);
+    debugTotal.innerHTML = '<span>celkem (' + rows.length + ' klíčů)</span><span>' + formatBytes(total) + '</span>';
+
+    debugOverlay.style.display = 'flex';
+  }
+
+  if (versionEl){
+    versionEl.addEventListener('click', () => {
+      debugClickCount++;
+      clearTimeout(debugClickTimer);
+      if (debugClickCount >= DEBUG_CLICKS_NEEDED){
+        debugClickCount = 0;
+        showStorageDebug();
+      } else {
+        debugClickTimer = setTimeout(() => { debugClickCount = 0; }, DEBUG_CLICK_WINDOW_MS);
+      }
+    });
+  }
+
+  debugCloseBtn.addEventListener('click', () => { debugOverlay.style.display = 'none'; });
+  debugOverlay.addEventListener('click', (e) => {
+    if (e.target === debugOverlay) debugOverlay.style.display = 'none';
+  });
 
   function updateFindButtonState(){
     findRoutesBtn.disabled = !(selectedFrom && selectedTo);
