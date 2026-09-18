@@ -496,6 +496,51 @@ jednoduše odhvězdičkováním.
 
 ---
 
+## US-14-bug-fixes — Oprava: hvězdička nejde po pár oblíbených dvojicích
+
+Tohle není nová user story, ale záznam opravy chyby v chování zadaném v
+US-14 — zapsáno jako reference na branch `US-14-bug-fixes`.
+
+Hlášení uživatele (doslovné znění):
+
+> po dalsich testech jsem ale narazil na bug. Kdyz uz jsem mel v ulozenych
+> dvojicich 6 dvojic, nedari se mi pres tlacitko hvezdicky pridat do
+> ulozenych dvojic dalsi dvojici.
+
+Uživatel se následně přiznal, že appku testuje jako PWA na mobilu (iOS,
+přidaná na plochu).
+
+**Příčina:** `saveFavoritePairs()`/`saveStopPair()`/`pushRecentPair()`
+zapisovaly do `localStorage` v `try/catch`, který chybu jen zalogoval
+(`console.warn`) a mlčky zahodil — takže `QuotaExceededError` (mobilní
+WebKit/PWA na home screen bývá výrazně přísnější než desktop, řádově kolem
+1 MB na origin) hvězdičce nedal vůbec vědět, že se nic neuložilo.
+`isFavoritePair()` po takovém neúspěšném zápisu správně hlásilo `false`,
+takže to navenek vypadalo, že hvězdička na přidání "nereaguje". Appka si
+navíc do stejného úložiště ukládá i podstatně objemnější, ale kdykoli
+znovu dopočitatelné cache (celý seznam zastávek z US-7/US-12, per-stanice
+jízdní řády z US-13) — ty čas od času vyčerpaly zbytek dostupné kvóty.
+
+**Oprava**
+- Nová `trySetItem(key, value)` v `connections.js`: při
+  `QuotaExceededError` postupně zahodí velké, znovu-dopočitatelné cache
+  (seznam zastávek, index linek, per-stanice cache jízdních řádů z
+  US-13) a zápis zopakuje, dokud se buď neuvolní místo, nebo nedojdou
+  cache k zahození — teprve pak zápis skutečně selže.
+- `saveFavoritePairs`/`addFavoritePair`/`removeFavoritePair`,
+  `saveStopPair` i `pushRecentPair` teď přes `trySetItem` procházejí;
+  `addFavoritePair`/`removeFavoritePair` navíc vrací `true`/`false` podle
+  toho, jestli zápis (i po uvolnění cache) skutečně prošel.
+- Hlavní obrazovka má nový řádek pro chybovou hlášku (`#mainError`, stejný
+  vzor jako `#pickerError`) — pokud hvězdičkování i po uvolnění cache
+  selže, appka to uživateli výslovně napíše, místo aby tiše nic neudělala.
+  Stejná hláška se zobrazí i při mazání hvězdičkou přímo ze seznamu
+  oblíbených na obrazovce výběru dvojic.
+
+**Stav:** Aktivní.
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 

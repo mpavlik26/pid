@@ -73,6 +73,7 @@
   const changeKeyBtn = document.getElementById('changeKeyBtn');
   const changeStopsBtn = document.getElementById('changeStopsBtn');
   const toggleFavoriteBtn = document.getElementById('toggleFavoriteBtn');
+  const mainError = document.getElementById('mainError');
   const favoritePairsSection = document.getElementById('favoritePairsSection');
   const favoritePairsList = document.getElementById('favoritePairsList');
   const recentPairsSection = document.getElementById('recentPairsSection');
@@ -130,6 +131,20 @@
     }
   }
 
+  // Dočasná chybová hláška na hlavní obrazovce (US-14-bug-fixes) — hlavně
+  // pro selhání ukládání oblíbených/naposledy použitých dvojic kvůli plné
+  // kvótě localStorage (běžné na mobilu). Zmizí sama po pár vteřinách, aby
+  // netrčela nad statusbarem donekonečna.
+  let mainErrorTimer = null;
+  function showMainError(message){
+    mainError.textContent = message;
+    mainError.style.display = 'block';
+    clearTimeout(mainErrorTimer);
+    mainErrorTimer = setTimeout(() => { mainError.style.display = 'none'; }, 6000);
+  }
+
+  const STORAGE_FULL_MESSAGE = 'Nepodařilo se uložit — úložiště prohlížeče je plné i po uvolnění dočasných dat appky. Zkuste odebrat některou oblíbenou dvojici, ať se uvolní místo.';
+
   function renderPairList(listEl, pairs, withStar){
     listEl.innerHTML = pairs.map((pair, i) => {
       const label = `${escapeHtml(pair.from.name)} <span class="arrow">→</span> ${escapeHtml(pair.to.name)}`;
@@ -159,8 +174,11 @@
     if (starBtn){
       const pair = favoritePairsData[Number(starBtn.dataset.idx)];
       if (pair){
-        Connections.removeFavoritePair(pair);
-        renderPairShortcuts();
+        if (Connections.removeFavoritePair(pair)){
+          renderPairShortcuts();
+        } else {
+          showPicker(STORAGE_FULL_MESSAGE);
+        }
       }
       return;
     }
@@ -187,11 +205,10 @@
 
   toggleFavoriteBtn.addEventListener('click', () => {
     if (!currentPair) return;
-    if (Connections.isFavoritePair(currentPair)){
-      Connections.removeFavoritePair(currentPair);
-    } else {
-      Connections.addFavoritePair(currentPair);
-    }
+    const ok = Connections.isFavoritePair(currentPair)
+      ? Connections.removeFavoritePair(currentPair)
+      : Connections.addFavoritePair(currentPair);
+    if (!ok) showMainError(STORAGE_FULL_MESSAGE);
     updateFavoriteButtonState();
   });
 

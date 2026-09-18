@@ -25,6 +25,19 @@
   const STOP_ARRIVALS_CACHE_KEY = 'pid_departures_stop_arrivals_cache';
   const TRIP_INFO_CACHE_KEY = 'pid_departures_trip_info_cache';
 
+  // Cache klíče, které appka umí kdykoli zahodit a znovu dopočítat/stáhnout
+  // (US-14-bug-fixes) — na rozdíl od oblíbených/naposledy použitých dvojic,
+  // což je uživatelský obsah. Na mobilu (zejména PWA přidaná na plochu na
+  // iOS) bývá kvóta localStorage jen kolem 1 MB, takže tyhle větší cache
+  // (hlavně celý seznam zastávek) ji časem vyčerpají — viz trySetItem.
+  const REGENERABLE_CACHE_KEYS = [
+    STOP_INDEX_KEY,
+    ROUTE_INDEX_KEY,
+    STOP_SEQ_CACHE_KEY,
+    STOP_ARRIVALS_CACHE_KEY,
+    TRIP_INFO_CACHE_KEY
+  ];
+
   // Golemio limit: 20 req / 8 s na klíč. Místo pevné pauzy mezi requesty
   // (dřívější RATE_LIMIT_DELAY_MS) appka teď hospodaří s rozpočtem sdíleně
   // napříč VŠEMI voláními na Golemio (viz acquireSlot/golemioGet, US-11) —
@@ -79,6 +92,30 @@
   // Uloží hodnotu pro daný dílčí klíč s dnešním datem a zároveň zahodí
   // položky z jiných dnů (US-13) — cache tak neroste donekonečna, drží jen
   // to, co je relevantní pro dnešek.
+  // Zapíše do localStorage; pokud selže kvůli plné kvótě (QuotaExceededError
+  // — na mobilu běžné, viz REGENERABLE_CACHE_KEYS výše), postupně zahazuje
+  // velké znovu-dopočitatelné cache a zápis zkouší znovu, dokud se buď
+  // neuvolní dost místa, nebo nedojdou cache k zahození (US-14-bug-fixes).
+  // Používá se pro malý, pro uživatele důležitý obsah (oblíbené/naposledy
+  // použité/aktuální dvojice), který nesmí tiše zmizet jen proto, že si
+  // appka mezitím nacpala kvótu velkým seznamem zastávek.
+  function trySetItem(key, value) {
+    try {
+      localStorage.setItem(key, value);
+      return true;
+    } catch (e) {
+      for (const cacheKey of REGENERABLE_CACHE_KEYS) {
+        try { localStorage.removeItem(cacheKey); } catch (e2) { /* ignorujeme */ }
+        try {
+          localStorage.setItem(key, value);
+          return true;
+        } catch (e3) { /* zkusit uvolnit další cache */ }
+      }
+      console.warn('Nepodařilo se uložit do localStorage ani po uvolnění cache', key, e);
+      return false;
+    }
+  }
+
   function saveDayCache(storageKey, subKey, data) {
     try {
       const raw = localStorage.getItem(storageKey);
@@ -497,11 +534,7 @@
   }
 
   function saveStopPair(pair) {
-    try {
-      localStorage.setItem(STOP_PAIR_KEY, JSON.stringify(pair));
-    } catch (e) {
-      console.warn('Nepodařilo se uložit dvojici zastávek', e);
-    }
+    trySetItem(STOP_PAIR_KEY, JSON.stringify(pair));
   }
 
   function clearStopPair() {
@@ -534,11 +567,7 @@
   }
 
   function saveFavoritePairs(pairs) {
-    try {
-      localStorage.setItem(STOP_PAIR_FAVORITES_KEY, JSON.stringify(sortPairsAlphabetically(pairs)));
-    } catch (e) {
-      console.warn('Nepodařilo se uložit oblíbené dvojice zastávek', e);
-    }
+    return trySetItem(STOP_PAIR_FAVORITES_KEY, JSON.stringify(sortPairsAlphabetically(pairs)));
   }
 
   function isFavoritePair(pair) {
@@ -546,16 +575,19 @@
     return loadFavoritePairs().some((p) => pairKey(p) === key);
   }
 
+  // Vrací true/false podle toho, jestli se zápis do localStorage povedl
+  // (US-14-bug-fixes) — volající (hvězdička v app.js) na false zobrazí
+  // uživateli chybu místo tichého selhání.
   function addFavoritePair(pair) {
     const key = pairKey(pair);
     const pairs = loadFavoritePairs().filter((p) => pairKey(p) !== key);
     pairs.push(pair);
-    saveFavoritePairs(pairs);
+    return saveFavoritePairs(pairs);
   }
 
   function removeFavoritePair(pair) {
     const key = pairKey(pair);
-    saveFavoritePairs(loadFavoritePairs().filter((p) => pairKey(p) !== key));
+    return saveFavoritePairs(loadFavoritePairs().filter((p) => pairKey(p) !== key));
   }
 
   function loadRecentPairs() {
@@ -577,11 +609,7 @@
     const key = pairKey(pair);
     const pairs = loadRecentPairs().filter((p) => pairKey(p) !== key);
     pairs.unshift(pair);
-    try {
-      localStorage.setItem(STOP_PAIR_RECENTS_KEY, JSON.stringify(pairs.slice(0, RECENT_PAIRS_MAX)));
-    } catch (e) {
-      console.warn('Nepodařilo se uložit naposledy použité dvojice zastávek', e);
-    }
+    trySetItem(STOP_PAIR_RECENTS_KEY, JSON.stringify(pairs.slice(0, RECENT_PAIRS_MAX)));
   }
 
   window.Connections = {
