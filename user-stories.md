@@ -734,6 +734,45 @@ fetchi).
 
 ---
 
+## US-18 — Zmenšení objemu dat v localStorage bez zvýšení počtu API volání
+
+Doslovné zadání (z konverzace):
+
+> napadají Tě nějaké optimalizace, které by snížily objem dat v local
+> storage, ale zároveň by razantně nezvýšily čas potřebný k dotažení
+> informací z API (zde je nutno počítat i s rate limittingem)
+
+> jo, rozprac to jako story - Tvé návrhy se mi líbí
+
+**Jako** uživatel appky **chci** snížit objem dat ukládaných v localStorage,
+**abych** nenarážel na kvótu (typicky na mobilu, kde je limit kolem 1 MB),
+aniž by to appku donutilo dělat víc dotazů na Golemio API nebo zpomalilo
+načítání dat.
+
+**Akceptační kritéria**
+- `stop_arrivals_cache` ukládá pro danou zastávku jen záznamy pro `trip_id`,
+  které se reálně objevily mezi zobrazenými spoji (aktuálními i nedávno
+  viděnými), ne kompletní denní jízdní řád celé zastávky. Filtrování
+  proběhne až nad už staženým `/gtfs/stoptimes/{stopId}` response — žádné
+  další API volání navíc.
+- `cachedDate` flag pro danou zastávku zůstává zapsaný i po prořezání dat
+  (i kdyby výsledné pole bylo prázdné), aby se při příštím čtení nespustil
+  zbytečný refetch jen proto, že je uložených záznamů méně.
+- Při uložení dvojice zastávek (aktivní/oblíbené/nedávné) appka odstraní ze
+  `stop_seq_cache`, `trip_info_cache` a `stop_arrivals_cache` záznamy pro
+  `stopId`, které už nepatří žádné z aktuálně uložených dvojic (aktivní +
+  oblíbené + nedávné).
+- `stop_seq_cache` a `trip_info_cache` zůstávají obsahově beze změny
+  (neprořezávají se) — potřebují kompletní data o všech spojích přes danou
+  zastávku, protože `computeAllowedRoutes` z nich může kdykoli dopočítávat
+  i jinou (dosud neznámou) dvojici zastávek sdílející tu samou stanici.
+- Žádná z úprav nepřidává nové HTTP požadavky na Golemio API navíc oproti
+  současnému stavu.
+
+**Stav:** Aktivní
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 
