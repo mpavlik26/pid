@@ -751,10 +751,16 @@ načítání dat.
 
 **Akceptační kritéria**
 - `stop_arrivals_cache` ukládá pro danou zastávku jen záznamy pro `trip_id`,
-  které se reálně objevily mezi zobrazenými spoji (aktuálními i nedávno
-  viděnými), ne kompletní denní jízdní řád celé zastávky. Filtrování
-  proběhne až nad už staženým `/gtfs/stoptimes/{stopId}` response — žádné
-  další API volání navíc.
+  které appka podle už dnes cachovaného `stop_seq_cache` obou zastávek (origin
+  i cíl) prokazatelně zná jako přímé spoje aktuální dvojice — stejná definice,
+  jakou používá `computeAllowedRoutes` (`destSeq > originSeq`) — ne kompletní
+  denní jízdní řád celé zastávky. Filtrování proběhne až nad už staženým
+  `/gtfs/stoptimes/{stopId}` response a nad už cachovaným `stop_seq_cache`
+  (bez nového dotazu na `/gtfs/stoptimes` pro sekvence). Pokud `stop_seq_cache`
+  pro některou ze zastávek dnes ještě není (typicky dvojice aktivovaná
+  z oblíbených/naposledy použitých v novém dni), appka filtrování přeskočí
+  a uloží kompletní data jako dosud — nikdy kvůli tomu nevyvolá nový
+  požadavek navíc.
 - `cachedDate` flag pro danou zastávku zůstává zapsaný i po prořezání dat
   (i kdyby výsledné pole bylo prázdné), aby se při příštím čtení nespustil
   zbytečný refetch jen proto, že je uložených záznamů méně.
