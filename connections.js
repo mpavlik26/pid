@@ -358,20 +358,27 @@
     return mergeArrivals(stopIds, apiKey);
   }
 
-  // Poloha vozidla pro konkrétní spoj (US-8) — na rozdíl od GTFS endpointů
-  // vrací Golemio tady jeden GeoJSON Feature (ne FeatureCollection), skutečná
-  // data jsou tedy v properties, ne přímo v odpovědi. Vrátí Date poslední
-  // zprávy o poloze (origin_timestamp), nebo null, pokud spoj nemá aktuální
-  // polohu (404) nebo properties neobsahuje last_position — to není fatální
-  // chyba, řádek se prostě zobrazí bez informace o poloze.
+  // Poloha vozidla pro konkrétní spoj (US-8, rozšířeno v US-17) — na rozdíl
+  // od GTFS endpointů vrací Golemio tady jeden GeoJSON Feature (ne
+  // FeatureCollection), skutečná data jsou tedy v properties, ne přímo v
+  // odpovědi. Vrátí {originTimestamp, lastStopId} nebo null, pokud spoj nemá
+  // aktuální polohu (404) nebo properties neobsahuje last_position — to není
+  // fatální chyba, řádek se prostě zobrazí bez informace o poloze.
+  // lastStopId (last_position.last_stop.id) je null, dokud vozidlo svou
+  // zdrojovou zastávku ještě neopustilo — jakmile ji opustí, zůstává
+  // vyplněné ID té zastávky po celou dobu jízdy k další (US-17: appka to
+  // používá jako potvrzení, že spoj skutečně odjel).
   async function fetchVehiclePosition(tripId, apiKey) {
     try {
       const data = await golemioGet('/vehiclepositions/' + encodeURIComponent(tripId), apiKey);
       const props = data && data.properties;
-      const iso = props && props.last_position && props.last_position.origin_timestamp;
+      const pos = props && props.last_position;
+      const iso = pos && pos.origin_timestamp;
       if (!iso) return null;
       const d = new Date(iso);
-      return isNaN(d.getTime()) ? null : d;
+      if (isNaN(d.getTime())) return null;
+      const lastStopId = (pos.last_stop && pos.last_stop.id) || null;
+      return {originTimestamp: d, lastStopId};
     } catch (e) {
       if (e.status === 401 || e.status === 403) throw e;
       return null;
@@ -383,9 +390,10 @@
   // spojů pro všechny aktuálně sledované spoje (US-8 zpětná vazba: jednorázové
   // zjištění polohy nestačí, potřeba průběžně ověřovat, jak moc je poslední
   // známý údaj čerstvý). Výsledek jednoho spoje se hlásí přes
-  // onResult(tripId, date|null) hned po dotazu, aby volající (app.js) mohl
-  // průběžně promítat nové hodnoty do UI bez čekání na celou dávku. Chyba
-  // 401/403 z fetchVehiclePosition přeruší dávku a probublá volajícímu.
+  // onResult(tripId, {originTimestamp, lastStopId}|null) hned po dotazu, aby
+  // volající (app.js) mohl průběžně promítat nové hodnoty do UI bez čekání
+  // na celou dávku. Chyba 401/403 z fetchVehiclePosition přeruší dávku a
+  // probublá volajícímu.
   async function fetchVehiclePositions(tripIds, apiKey, onResult) {
     for (let i = 0; i < tripIds.length; i++) {
       const tripId = tripIds[i];

@@ -24,11 +24,24 @@
   // data nové dvojice.
   let arrivalsGeneration = 0;
 
-  // US-8: poloha vozidla, trip_id -> {originTimestamp, fetchedAt} | 'failed'.
-  // Ověřuje se znovu při každém refreshi seznamu spojů pro všechny aktuálně
-  // sledované spoje (ne jen jednou) — viz refreshVehiclePositions.
+  // US-8: poloha vozidla, trip_id -> {originTimestamp, lastStopId, fetchedAt}
+  // | 'failed'. Ověřuje se znovu při každém refreshi seznamu spojů pro
+  // všechny aktuálně sledované spoje (ne jen jednou) — viz
+  // refreshVehiclePositions. lastStopId přibylo v US-17 (viz níže).
   let vehiclePositions = new Map();
   let positionFetchInFlight = false;
+
+  // US-17: appka si mezi jednotlivými fetchi drží vlastní seznam naposledy
+  // viděných spojů podle trip.id, aby spoj nezmizel ze zobrazení jen proto,
+  // že ho Golemio přestalo vracet v /pid/departureboards (to se řídí
+  // predikovaným, ne reálným odjezdem). trip_id -> {dep, missingSince}.
+  // missingSince je null, dokud je spoj v čerstvé odpovědi API; jakmile z ní
+  // vypadne, uloží se čas vypadnutí a spoj zůstává zobrazený, dokud buď
+  // poloha vozidla nepotvrdí, že už odjel ze zdrojové zastávky, nebo
+  // neuplyne MISSING_GRACE_MS (záložní doba pro případ, že se poloha vůbec
+  // nepodaří zjistit).
+  let retainedDepartures = new Map();
+  const MISSING_GRACE_MS = 60000;
 
   // GTFS route type -> ikona druhu dopravního prostředku (US-8).
   const ROUTE_TYPE_ICON = {
@@ -639,11 +652,15 @@
     if (!tripIds.length) return;
     positionFetchInFlight = true;
     try{
-      await Connections.fetchVehiclePositions(tripIds, apiKey, (tripId, originTimestamp) => {
+      await Connections.fetchVehiclePositions(tripIds, apiKey, (tripId, result) => {
         const hadData = vehiclePositions.get(tripId);
         const alreadyKnown = hadData && hadData !== 'failed';
-        if (originTimestamp){
-          vehiclePositions.set(tripId, {originTimestamp, fetchedAt: Date.now()});
+        if (result){
+          vehiclePositions.set(tripId, {
+            originTimestamp: result.originTimestamp,
+            lastStopId: result.lastStopId,
+            fetchedAt: Date.now()
+          });
         } else if (!alreadyKnown){
           vehiclePositions.set(tripId, 'failed');
         }
@@ -670,6 +687,46 @@
     Array.from(vehiclePositions.keys()).forEach(tripId => {
       if (!activeIds.has(tripId)) vehiclePositions.delete(tripId);
     });
+  }
+
+  // US-17: sloučí čerstvou odpověď API s dřív zapamatovanými spoji, které
+  // z ní mezitím vypadly, a rozhodne, které z nich už skutečně patří pryč ze
+  // seznamu. Spoj bez trip.id nelze mezi fetchi sledovat (nemá stabilní
+  // klíč) — takový se chová postaru, zmizí hned, jakmile ho API přestane
+  // vracet.
+  function mergeWithRetained(freshDepartures){
+    const freshIds = new Set();
+    freshDepartures.forEach(dep => {
+      const tripId = dep.trip && dep.trip.id;
+      if (!tripId) return;
+      freshIds.add(tripId);
+      retainedDepartures.set(tripId, {dep, missingSince: null});
+    });
+
+    const now = Date.now();
+    Array.from(retainedDepartures.keys()).forEach(tripId => {
+      if (freshIds.has(tripId)) return;
+      const entry = retainedDepartures.get(tripId);
+      if (entry.missingSince === null) entry.missingSince = now;
+
+      const cached = vehiclePositions.get(tripId);
+      const originStopId = entry.dep.stop && entry.dep.stop.id;
+      const confirmedDeparted = cached && cached !== 'failed' && cached.lastStopId
+        && originStopId && cached.lastStopId === originStopId;
+
+      if (confirmedDeparted || (now - entry.missingSince) >= MISSING_GRACE_MS){
+        retainedDepartures.delete(tripId);
+      }
+    });
+
+    const untracked = freshDepartures.filter(dep => !(dep.trip && dep.trip.id));
+    const merged = Array.from(retainedDepartures.values()).map(e => e.dep).concat(untracked);
+    merged.sort((a, b) => {
+      const ta = a._predicted ? a._predicted.getTime() : Infinity;
+      const tb = b._predicted ? b._predicted.getTime() : Infinity;
+      return ta - tb;
+    });
+    return merged;
   }
 
   function render(departures){
@@ -764,18 +821,17 @@
       params.set('mode', 'departures');
 
       const data = await Connections.golemioGet('/pid/departureboards?' + params.toString(), apiKey);
-      const departures = (data.departures || [])
+      const freshDepartures = (data.departures || [])
         .filter(dep => {
           const rn = dep.route && dep.route.short_name;
           const hs = dep.trip && dep.trip.headsign;
           return isAllowed(rn, hs);
         })
-        .map(dep => { dep._predicted = predictedDate(dep); return dep; })
-        .sort((a, b) => {
-          const ta = a._predicted ? a._predicted.getTime() : Infinity;
-          const tb = b._predicted ? b._predicted.getTime() : Infinity;
-          return ta - tb;
-        });
+        .map(dep => { dep._predicted = predictedDate(dep); return dep; });
+
+      // US-17: spoj, který z čerstvé odpovědi vypadl, hned nemizí ze
+      // seznamu — viz mergeWithRetained.
+      const departures = mergeWithRetained(freshDepartures);
 
       currentDepartures = departures;
       render(departures);
