@@ -689,6 +689,8 @@ už je na cestě k další zastávce" než porovnání souřadnic nebo raw GTFS-
 - Text "odjíždí" (US-8-bug-fixes) se touto story nemění — pořád řízený
   časovým odhadem `formatCountdown()`. Nezávisí na tom, kdy spoj zmizí ze
   seznamu.
+- Text "odjíždí" je barevně stejný jako countdown v posledních vteřinách
+  před odjezdem (`.min.soon`), ať je to vizuálně konzistentní.
 - "poloha před X s" tag (US-8) zůstává beze změny.
 
 **Známé omezení:** u okružních linek, kde se stejná zastávka v trase
