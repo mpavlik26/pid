@@ -572,6 +572,50 @@ naposledy použité).
 
 ---
 
+## US-16 — Automatický refresh appky při nové verzi
+
+**Zadání (doslovně):** Chtěl bych zajistit, aby bylo zajisteno, ze v
+pripade nove verze se tato vzdycky v prohlizeci refreshla tak, aby se o to
+nemusel starat uzivatel.
+
+**Kontext:** Appka dnes cachuje shell cache-first (`sw.js`, `CACHE_NAME`
+odvozený z `APP_VERSION`) a nová verze se plně projeví, jen když uživatel
+appku zavře a znovu otevře — a i tak kvůli standardnímu chování service
+workerů (nová verze zůstává „waiting", dokud stránku ovládá stará) může
+být potřeba otevřít dvakrát. V diskuzi bylo probráno a rozhodnuto:
+- Žádný vlastní periodický polling (`registration.update()` na časovač) —
+  kontrola nové verze se má spoléhat na to, co prohlížeč dělá sám
+  (kontrola `sw.js` na byte-diff při každém reálném otevření appky).
+- Reload se nemá dít násilně uprostřed běžícího používání appky (ztráta
+  rozepsaného vstupu na `setupScreen`/`pickerScreen`, přerušení
+  právě běžícího fetche) — má stačit, že se nová verze plně projeví při
+  příštím reálném otevření appky, ne okamžitě za běhu.
+- Aby jedno reálné otevření po vydání nové verze stačilo (bez nutnosti
+  otevřít appku dvakrát kvůli „waiting" service workeru), je potřeba
+  `self.skipWaiting()` v `install` a `clients.claim()` v `activate` v
+  `sw.js`.
+
+**Akceptační kritéria**
+- Když prohlížeč při reálném otevření/navigaci na appku zjistí novou verzi
+  `sw.js` (jiný `CACHE_NAME`), appka se po dokončení instalace nové verze
+  sama přesně jednou reloadne — uživatel nemusí appku zavírat a znovu
+  otevírat, aby viděl novou verzi.
+- Žádný vlastní časovaný polling na kontrolu nové verze
+  (`registration.update()` na interval) — appka se spoléhá na kontrolu,
+  kterou dělá prohlížeč sám při navigaci.
+- Appka se sama od sebe nereloaduje uprostřed už rozjeté session, pokud
+  nedojde ke skutečné navigaci/otevření (žádné tiché reloady na pozadí bez
+  souvislosti s reálným otevřením appky).
+- Appkové tlačítko „obnovit" (`refreshBtn`) zůstává beze změny — dál jen
+  dotahuje nová data o odjezdech, nevynucuje reload stránky ani kontrolu
+  nové verze.
+- Žádná nekonečná smyčka reloadů (pojistka proti opakovanému spuštění
+  `controllerchange` handleru).
+
+**Stav:** Aktivní.
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 
