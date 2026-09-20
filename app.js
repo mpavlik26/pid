@@ -817,5 +817,16 @@
         console.warn('Service worker se nepodařilo zaregistrovat', err);
       });
     });
+
+    // US-16: jakmile prohlížeč při reálném otevření appky zjistí novou verzi
+    // sw.js (skipWaiting/clients.claim v sw.js převezmou kontrolu na pozadí),
+    // dokončit přechod jedním automatickým reloadem — ať uživatel nemusí
+    // appku zavírat a otevírat znovu, aby viděl novou verzi.
+    let reloadedForNewVersion = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloadedForNewVersion) return;
+      reloadedForNewVersion = true;
+      window.location.reload();
+    });
   }
 })();
