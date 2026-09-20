@@ -616,6 +616,38 @@ být potřeba otevřít dvakrát. V diskuzi bylo probráno a rozhodnuto:
 
 ---
 
+## US-8-bug-fixes — Oprava: text "odjel" u spoje, který ještě reálně neodjel
+
+Tohle není nová user story, ale záznam opravy chování zadaného v US-8
+(countdown vč. stavu "odjel") — zapsáno jako reference na branch
+`US-8-bug-fixes`.
+
+Hlášení uživatele (doslovné znění):
+
+> resim spise to, ze realne se dost casto deje, ze se v aplikaci vypisuje
+> stav "odjel" a pritom spoj jeste neni ani v zastavce nebo do ni prave
+> prijizdi. Minimalni bych tedy zmenil text z "odjel" na "odjíždí".
+
+**Příčina:** Stav "odjel" (`formatCountdown()` v `app.js`) se odvozuje čistě
+z toho, že predikovaný čas odjezdu (`dep._predicted`, z jízdního řádu +
+zpoždění) je víc než 5 s v minulosti — ne ze skutečné polohy vozidla. Když
+appka predikci má, ale poloha vozidla dostupná není (nebo je zastaralá),
+countdown dojde na nulu, i když spoj fyzicky teprve přijíždí nebo je pořád
+na zastávce.
+
+**Oprava**
+- Text při `past === true` změněn z "odjel" na "odjíždí" (`app.js`,
+  `tick()`) — přesnější formulace pro stav, kdy appka jen ví, že
+  naplánovaný/predikovaný čas odjezdu uplynul, ne že vozidlo reálně opustilo
+  zastávku.
+- Přesnější odvození stavu od skutečné polohy vozidla (místo jen
+  predikovaného času) je mimo rozsah této opravy — vyžadovalo by novou
+  story.
+
+**Stav:** Opraveno.
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 
