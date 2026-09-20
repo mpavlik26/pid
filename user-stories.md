@@ -648,6 +648,58 @@ na zastávce.
 
 ---
 
+## US-17 — Spoj nezmizí ze seznamu dřív, než reálně odjede
+
+**Zadání (doslovně):**
+
+> No, skoro bych rekl, ze je pro me vlastne dulezitejsi, ze mi nezmizi spoj
+> ze seznamu spoju drive, nez skutecne odjede. Takze bych to vlastne asi
+> rad posunul tak, ze to, ze odjizdi by se zobrazovalo tak, jak je to ted
+> (popr v okamziku, kdy ze statusu vime, ze spoj je jiz v zastavce) a ze
+> seznamu spoju by spoj zmizel prave az v okamziku, kdy z dat budeme vedet,
+> ze uz je na ceste k dalsi zastavce.
+
+**Kontext:** Seznam se dnes při každém fetchi (~20 s) čistě nahradí
+odpovědí z `/pid/departureboards` — appka žádnou vlastní logiku "kdy zmizet
+ze seznamu" nemá, jen zobrazuje to, co Golemio zrovna vrátí. Jakmile
+Golemio přestane spoj v odpovědi vracet (na základě predikovaného, ne
+reálného odjezdu), spoj ze seznamu zmizí — i když vozidlo ještě fyzicky
+stojí na zastávce nebo teprve přijíždí.
+
+Ověřeno na dvou reálných odpovědích `/vehiclepositions/{tripId}`: dokud
+vozidlo zastávku neopustilo, `last_position.last_stop.id` je `null`
+(`state_position: "before_track"`); jakmile ji opustí, `last_stop.id` je
+stabilně vyplněné ID té zastávky a zůstává tak po celou dobu jízdy k další
+zastávce (`state_position: "on_track"`). To je spolehlivější signál "spoj
+už je na cestě k další zastávce" než porovnání souřadnic nebo raw GTFS-RT
+`INCOMING_AT`/`IN_TRANSIT_TO`.
+
+**Akceptační kritéria**
+- Appka si mezi jednotlivými fetchi drží vlastní seznam naposledy viděných
+  spojů podle `trip.id`, ne jen poslední odpověď z `/pid/departureboards`.
+- Když spoj z čerstvé odpovědi API zmizí, appka ho ze zobrazení hned
+  neodebere — zůstane v seznamu (s naposledy známými daty) a appka pro něj
+  dál dotazuje `/vehiclepositions/{tripId}`.
+- Spoj se ze seznamu skutečně odebere, až `last_position.last_stop.id`
+  odpovídá ID zastávky, ze které odjížděl (`dep.stop.id`) — tedy ve chvíli,
+  kdy víme, že vozidlo je už na cestě k další zastávce.
+- Pokud se polohu pro daný spoj nepodaří získat (netrackuje, opakované
+  chyby), appka ho po 60 s od zmizení z API přesto odebere, aby seznam
+  neotékal nepotvrzenými spoji.
+- Text "odjíždí" (US-8-bug-fixes) se touto story nemění — pořád řízený
+  časovým odhadem `formatCountdown()`. Nezávisí na tom, kdy spoj zmizí ze
+  seznamu.
+- "poloha před X s" tag (US-8) zůstává beze změny.
+
+**Známé omezení:** u okružních linek, kde se stejná zastávka v trase
+opakuje, může `last_stop.id` teoreticky sednout příliš brzy (na jiném
+průjezdu). Pro v1 akceptováno, případně řešit přes `sequence` pole, pokud
+se to v praxi ukáže jako problém.
+
+**Stav:** Aktivní
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 
