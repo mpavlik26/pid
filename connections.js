@@ -318,7 +318,16 @@
   // (string "HH:MM:SS", může přesáhnout 24:00:00 u spojů přes půlnoc — GTFS
   // konvence). Použito pro dopočet času příjezdu do cílové zastávky (US-8) —
   // na rozdíl od fetchStopSequences nezajímá stop_sequence, ale čas.
-  async function fetchStopArrivals(stopId, apiKey) {
+  //
+  // allowedTripIds (US-18, volitelné) — Set trip_id, které appka už z
+  // dnešního stop_seq_cache obou zastávek prokazatelně zná jako přímé spoje
+  // dané dvojice (viz candidateTripIdsFromCache). Pokud je zadaný, do
+  // localStorage se uloží jen tahle podmnožina (drtivá většina spojů přes
+  // velký přestupní uzel appku vůbec nezajímá) — v paměti appka ale i tak
+  // dostane a používá kompletní mapu pro AKTUÁLNÍ session, takže tohle
+  // prořezání nemá žádný dopad na chování dnešního běhu appky, jen na to,
+  // co přežije do dalšího čtení z localStorage.
+  async function fetchStopArrivals(stopId, apiKey, allowedTripIds) {
     const cached = loadDayCache(STOP_ARRIVALS_CACHE_KEY, stopId);
     if (cached) return new Map(cached);
 
@@ -333,29 +342,69 @@
       if (!tripId || !row.arrival_time) return;
       map.set(tripId, row.arrival_time);
     });
-    saveDayCache(STOP_ARRIVALS_CACHE_KEY, stopId, Array.from(map.entries()));
+    const toStore = allowedTripIds
+      ? Array.from(map.entries()).filter(([tripId]) => allowedTripIds.has(tripId))
+      : Array.from(map.entries());
+    saveDayCache(STOP_ARRIVALS_CACHE_KEY, stopId, toStore);
     return map;
   }
 
   // Sekvenční dotazy přes všechna nástupiště cílové zastávky — rate limit
   // hlídá sdíleně golemioGet (viz acquireSlot), tady se jen sčítají výsledky.
-  async function mergeArrivals(stopIds, apiKey) {
+  async function mergeArrivals(stopIds, apiKey, allowedTripIds) {
     const merged = new Map();
     for (let i = 0; i < stopIds.length; i++) {
-      const arrivals = await fetchStopArrivals(stopIds[i], apiKey);
+      const arrivals = await fetchStopArrivals(stopIds[i], apiKey, allowedTripIds);
       arrivals.forEach((time, tripId) => merged.set(tripId, time));
     }
     return merged;
+  }
+
+  // Zjistí (bez jakéhokoli API volání navíc — US-18), jestli appka už dnes
+  // má v cache stop_seq_cache pro VŠECHNA nástupiště origin i dest zastávky
+  // (typicky hned po computeAllowedRoutes pro nově zvolenou dvojici). Pokud
+  // ano, vrátí Set trip_id, které mezi nimi jedou ve správném pořadí — přesně
+  // stejná definice "přímého spoje", jakou používá computeAllowedRoutes.
+  // Pokud stop_seq_cache pro některou zastávku ještě dnes není (typicky
+  // dvojice aktivovaná z oblíbených/naposledy použitých v novém dni), vrátí
+  // null — volající pak filtrování přeskočí, aby si o chybějící data
+  // nemusel říkat novým requestem.
+  function candidateTripIdsFromCache(originStopIds, destStopIds) {
+    function mergedSeqFromCache(stopIds) {
+      const merged = new Map();
+      for (const stopId of stopIds) {
+        const cached = loadDayCache(STOP_SEQ_CACHE_KEY, stopId);
+        if (!cached) return null;
+        cached.forEach(([tripId, seq]) => {
+          const prev = merged.get(tripId);
+          if (prev === undefined || seq < prev) merged.set(tripId, seq);
+        });
+      }
+      return merged;
+    }
+
+    const originSeq = mergedSeqFromCache(originStopIds);
+    if (!originSeq) return null;
+    const destSeq = mergedSeqFromCache(destStopIds);
+    if (!destSeq) return null;
+
+    const candidates = new Set();
+    originSeq.forEach((originIdx, tripId) => {
+      const destIdx = destSeq.get(tripId);
+      if (destIdx !== undefined && destIdx > originIdx) candidates.add(tripId);
+    });
+    return candidates;
   }
 
   // Načte jízdním řádem daný (statický) čas příjezdu do cílové zastávky pro
   // všechny spoje, které přes ni jedou. Volá se jednou při nastavení/změně
   // BOARD_CONFIG (US-8), ne při každém refreshi odjezdů — statický jízdní
   // řád se v rámci jedné session nemění.
-  async function loadDestinationArrivals(stopIds, apiKey, onProgress) {
+  async function loadDestinationArrivals(destStopIds, originStopIds, apiKey, onProgress) {
     const report = (text) => { if (onProgress) onProgress(text); };
     report('Načítám jízdní řád cílové zastávky…');
-    return mergeArrivals(stopIds, apiKey);
+    const allowedTripIds = candidateTripIdsFromCache(originStopIds || [], destStopIds);
+    return mergeArrivals(destStopIds, apiKey, allowedTripIds);
   }
 
   // Poloha vozidla pro konkrétní spoj (US-8, rozšířeno v US-17) — na rozdíl
@@ -543,6 +592,7 @@
 
   function saveStopPair(pair) {
     trySetItem(STOP_PAIR_KEY, JSON.stringify(pair));
+    pruneOrphanedStopCaches();
   }
 
   function clearStopPair() {
@@ -575,7 +625,9 @@
   }
 
   function saveFavoritePairs(pairs) {
-    return trySetItem(STOP_PAIR_FAVORITES_KEY, JSON.stringify(sortPairsAlphabetically(pairs)));
+    const ok = trySetItem(STOP_PAIR_FAVORITES_KEY, JSON.stringify(sortPairsAlphabetically(pairs)));
+    if (ok) pruneOrphanedStopCaches();
+    return ok;
   }
 
   function isFavoritePair(pair) {
@@ -618,6 +670,39 @@
     const pairs = loadRecentPairs().filter((p) => pairKey(p) !== key);
     pairs.unshift(pair);
     trySetItem(STOP_PAIR_RECENTS_KEY, JSON.stringify(pairs.slice(0, RECENT_PAIRS_MAX)));
+    pruneOrphanedStopCaches();
+  }
+
+  // Po každé změně aktivní/oblíbené/naposledy použité dvojice (US-18) smaže
+  // z per-stopId cache (stop_seq_cache, trip_info_cache, stop_arrivals_cache)
+  // záznamy pro zastávky, které už nepatří žádné z aktuálně uložených dvojic.
+  // Obsah zachovaných záznamů se nemění — jen se appka zbaví dat pro
+  // zastávky, které už nemá šanci znovu použít bez nového dopočtu.
+  function pruneOrphanedStopCaches() {
+    const keepStopIds = new Set();
+    function collect(pair) {
+      if (!pair) return;
+      ((pair.from && pair.from.stopIds) || []).forEach((id) => keepStopIds.add(id));
+      ((pair.to && pair.to.stopIds) || []).forEach((id) => keepStopIds.add(id));
+    }
+    collect(loadStopPair());
+    loadFavoritePairs().forEach(collect);
+    loadRecentPairs().forEach(collect);
+
+    [STOP_SEQ_CACHE_KEY, TRIP_INFO_CACHE_KEY, STOP_ARRIVALS_CACHE_KEY].forEach((storageKey) => {
+      try {
+        const raw = localStorage.getItem(storageKey);
+        if (!raw) return;
+        const all = JSON.parse(raw);
+        const pruned = {};
+        Object.keys(all).forEach((stopId) => {
+          if (keepStopIds.has(stopId)) pruned[stopId] = all[stopId];
+        });
+        localStorage.setItem(storageKey, JSON.stringify(pruned));
+      } catch (e) {
+        console.warn('Nepodařilo se prořezat cache osiřelých zastávek', storageKey, e);
+      }
+    });
   }
 
   window.Connections = {

@@ -549,7 +549,7 @@
     const myGeneration = arrivalsGeneration;
     destinationArrivalsInFlight = true;
     try{
-      const result = await Connections.loadDestinationArrivals(BOARD_CONFIG.toStopIds, apiKey);
+      const result = await Connections.loadDestinationArrivals(BOARD_CONFIG.toStopIds, BOARD_CONFIG.stopIds, apiKey);
       if (myGeneration !== arrivalsGeneration) return; // mezitím se změnila dvojice zastávek
       destinationArrivals = result;
       destinationArrivalsLoaded = true;
