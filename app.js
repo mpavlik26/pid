@@ -798,7 +798,7 @@
       if (countdownEl){
         const {text, soon, past} = formatCountdown(dep._predicted);
         countdownEl.textContent = past ? 'odjíždí' : text;
-        countdownEl.classList.toggle('soon', soon && !past);
+        countdownEl.classList.toggle('soon', soon);
       }
       const posEl = board.querySelector('[data-postag="' + i + '"]');
       if (posEl){
