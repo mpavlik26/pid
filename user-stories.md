@@ -702,6 +702,38 @@ se to v praxi ukáže jako problém.
 
 ---
 
+## US-17-bug-fixes — Oprava: promíchané spoje staré a nové dvojice zastávek po přepnutí
+
+Tohle není nová user story, ale záznam opravy chování zavedeného v US-17
+(retenční seznam spojů mezi fetchi) — zapsáno jako reference na branch
+`US-17-bug-fixes`.
+
+Hlášení uživatele (doslovné znění):
+
+> při testování jsem ale narazil na škaredý problém. Při změně dvojic
+> zastívek ze seznamu oblíbených jsou v seznamu spojů nejen spoje skutečně
+> jezdící mezi oněmi 2 zastávkami, ale i jiné spoje (skoro bych řekl, že jde
+> o spoje z předchozí dvojice) a ty jsou zobrazeny v jednom výpisu slité
+> dohormady. Po provním auto refreshi (či manuálním refreshi se to srovná).
+
+**Příčina:** `retainedDepartures` a `vehiclePositions` (US-17) jsou
+modulové proměnné klíčované podle `trip.id`, ne podle aktuální dvojice
+zastávek. Přepnutí dvojice (`activatePair()` — ať už z formuláře, nebo z
+oblíbených/naposledy použitých) tyhle mapy nijak nečistilo, takže spoje
+staré dvojice v nich zůstaly jako "naposledy viděné" a `mergeWithRetained()`
+je při prvním fetchi pro novou dvojici přimíchal k čerstvým datům, dokud je
+neodstranila 60s grace perioda nebo potvrzená poloha (typicky až při dalším
+fetchi).
+
+**Oprava**
+- `activatePair()` nově při každém přepnutí dvojice resetuje
+  `retainedDepartures`, `vehiclePositions` i `currentDepartures` na prázdné
+  hodnoty, než zavolá `fetchDepartures()` pro novou dvojici.
+
+**Stav:** Opraveno.
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 

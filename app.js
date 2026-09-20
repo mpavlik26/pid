@@ -252,6 +252,14 @@
     destinationArrivalsLoaded = false;
     destinationArrivalsInFlight = false;
     arrivalsGeneration++;
+    // US-17-bug-fixes: retainedDepartures/vehiclePositions/currentDepartures
+    // jsou klíčované trip.id napříč celou appkou, ne per dvojice zastávek —
+    // bez resetu se sem při přepnutí dvojice (i z oblíbených) na chvíli
+    // promíchají spoje staré dvojice, dokud je neodstraní grace period nebo
+    // potvrzená poloha.
+    retainedDepartures = new Map();
+    vehiclePositions = new Map();
+    currentDepartures = [];
     loadDestinationArrivals();
     fetchDepartures();
     startTimer();
