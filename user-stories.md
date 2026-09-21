@@ -734,6 +734,46 @@ fetchi).
 
 ---
 
+## US-17-bug-fixes — Oprava: zastaralé spoje mizí ze seznamu se zpožděním 60–90 s po návratu
+
+Další záznam opravy chování z US-17 (retenční seznam spojů) — branch
+`US-17-bug-fixes`.
+
+Hlášení uživatele (doslovné znění):
+
+> Nene, vidis to spatne. To, co vidis, je obrazek, ktere si konzistentne
+> deje, kdykoliv prijdu po delsi dobe zpet k aplikaci. Tj., zustanou tam
+> stara data z predchozi seance (ty jzustanou naveky ve stavu "Odjizdi") a
+> dole pod nimi jsou pak aktualni odjezdy. Spravi se to az manualnim
+> refreshem (nestaci auto-refresh aplikace po 30s ani tlacitko
+> "Aktulizovat") - je potřeba klasický refresh stránky (aka CTRL+R na
+> desktopu ci swipe down na mobilu)
+
+Po upřesnění (appka to nakonec sama srovná, jen ne hned):
+
+> jo, po nejake chvile zmizi, ale nestane se tak hned po auto-refreshi ci po
+> stisknuti tlacitka "Aktualizovat"
+
+**Příčina:** Chování odpovídalo AC z US-17 ("po 60 s od zmizení z API
+přesto odebere"), ale ten grace interval byl navržený pro krátké výpadky
+API *během* běžného používání, ne pro situaci "appka byla dlouho na
+pozadí". `missingSince` se u spoje nastaví až při prvním fetchi po
+návratu, takže reálné smazání přišlo až o 60-90 s později (2.-3. tik), což
+u zjevně den/večer starých spojů působilo jako appka "nikdy" nereaguje na
+refresh.
+
+**Oprava**
+- `mergeWithRetained()` nově maže missing spoj okamžitě (bez čekání na
+  grace lhůtu ani na potvrzení polohy), pokud je jeho `_predicted` čas už
+  o víc než 5 minut v minulosti — jde zjevně o starou seanci/den, ne o
+  krátký výpadek API u aktuálního odjezdu. 60s grace lhůta a kontrola
+  potvrzené polohy (`confirmedDeparted`) zůstávají beze změny pro spoje,
+  které zmizí těsně kolem svého skutečného odjezdu.
+
+**Stav:** Opraveno.
+
+---
+
 ## US-18 — Zmenšení objemu dat v localStorage bez zvýšení počtu API volání
 
 Doslovné zadání (z konverzace):
