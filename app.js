@@ -43,6 +43,13 @@
   let retainedDepartures = new Map();
   const MISSING_GRACE_MS = 60000;
 
+  // US-17-bug-fixes: MISSING_GRACE_MS je určená pro krátké výpadky API
+  // kolem reálného odjezdu sledovaného spoje, ne pro spoje zůstalé v mapě
+  // po delší odmlce appky (např. z předchozího dne). Takový spoj má
+  // _predicted už hluboko v minulosti, takže se maže hned, bez čekání na
+  // grace lhůtu i na potvrzení polohy.
+  const STALE_PREDICTED_MS = 5 * 60000;
+
   // GTFS route type -> ikona druhu dopravního prostředku (US-8).
   const ROUTE_TYPE_ICON = {
     0: '🚊', // tramvaj
@@ -717,12 +724,15 @@
       const entry = retainedDepartures.get(tripId);
       if (entry.missingSince === null) entry.missingSince = now;
 
+      const predictedMs = entry.dep._predicted ? entry.dep._predicted.getTime() : null;
+      const staleFromEarlierSession = predictedMs !== null && (now - predictedMs) >= STALE_PREDICTED_MS;
+
       const cached = vehiclePositions.get(tripId);
       const originStopId = entry.dep.stop && entry.dep.stop.id;
       const confirmedDeparted = cached && cached !== 'failed' && cached.lastStopId
         && originStopId && cached.lastStopId === originStopId;
 
-      if (confirmedDeparted || (now - entry.missingSince) >= MISSING_GRACE_MS){
+      if (staleFromEarlierSession || confirmedDeparted || (now - entry.missingSince) >= MISSING_GRACE_MS){
         retainedDepartures.delete(tripId);
       }
     });
