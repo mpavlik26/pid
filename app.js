@@ -43,6 +43,13 @@
   let retainedDepartures = new Map();
   const MISSING_GRACE_MS = 60000;
 
+  // US-17-bug-fixes: čas, kdy naposledy proběhlo úspěšné sloučení čerstvé
+  // odpovědi API (viz mergeWithRetained). Slouží k odhadu, odkdy je spoj
+  // *skutečně* pryč z API, když appka byla delší dobu na pozadí — v tu
+  // chvíli totiž nevíme nic mezi posledním úspěšným fetchem a teď, takže
+  // není správné počítat grace lhůtu od "teď" (viz komentář níž).
+  let lastFetchCompletedAt = null;
+
   // GTFS route type -> ikona druhu dopravního prostředku (US-8).
   const ROUTE_TYPE_ICON = {
     0: '🚊', // tramvaj
@@ -259,6 +266,7 @@
     // potvrzená poloha.
     retainedDepartures = new Map();
     vehiclePositions = new Map();
+    lastFetchCompletedAt = null;
     currentDepartures = [];
     loadDestinationArrivals();
     fetchDepartures();
@@ -712,20 +720,40 @@
     });
 
     const now = Date.now();
+    // US-17-bug-fixes: spoj, co teď poprvé vypadl z čerstvé odpovědi, byl
+    // prokazatelně přítomný ještě při posledním úspěšném fetchi — ne až
+    // "teď". Po delší odmlce appky (zavřená záložka, telefon uspaný) je
+    // mezera mezi tímto a předchozím fetchem obrovská, takže missingSince
+    // zpětně nastavené na dobu posledního fetche hned překročí grace lhůtu
+    // a appka zastaralý spoj smaže při prvním fetchi po návratu, ne až po
+    // 60–90 s. Při běžném provozu (mezera ~REFRESH_MS) se prakticky nic
+    // nemění oproti počítání od "teď".
+    const missingSinceBaseline = lastFetchCompletedAt !== null ? lastFetchCompletedAt : now;
+
     Array.from(retainedDepartures.keys()).forEach(tripId => {
       if (freshIds.has(tripId)) return;
       const entry = retainedDepartures.get(tripId);
-      if (entry.missingSince === null) entry.missingSince = now;
+      if (entry.missingSince === null) entry.missingSince = missingSinceBaseline;
 
       const cached = vehiclePositions.get(tripId);
       const originStopId = entry.dep.stop && entry.dep.stop.id;
-      const confirmedDeparted = cached && cached !== 'failed' && cached.lastStopId
+      const hasPositionData = cached && cached !== 'failed';
+      const confirmedDeparted = hasPositionData && cached.lastStopId
         && originStopId && cached.lastStopId === originStopId;
 
-      if (confirmedDeparted || (now - entry.missingSince) >= MISSING_GRACE_MS){
+      // US-17-bug-fixes: grace lhůta je záložní doba jen pro případ, že se
+      // poloha vůbec nepodaří zjistit (viz komentář k retainedDepartures
+      // výš) — pokud appka platná polohová data má a ta nepotvrzují odjezd
+      // (spoj třeba stojí v koloně těsně před zastávkou), spoj musí zůstat
+      // bez ohledu na to, jak dlouho je pryč z /pid/departureboards.
+      const missingTooLongWithoutPosition = !hasPositionData && (now - entry.missingSince) >= MISSING_GRACE_MS;
+
+      if (confirmedDeparted || missingTooLongWithoutPosition){
         retainedDepartures.delete(tripId);
       }
     });
+
+    lastFetchCompletedAt = now;
 
     const untracked = freshDepartures.filter(dep => !(dep.trip && dep.trip.id));
     const merged = Array.from(retainedDepartures.values()).map(e => e.dep).concat(untracked);

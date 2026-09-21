@@ -734,6 +734,100 @@ fetchi).
 
 ---
 
+## US-17-bug-fixes — Oprava: zastaralé spoje mizí ze seznamu se zpožděním 60–90 s po návratu
+
+Další záznam opravy chování z US-17 (retenční seznam spojů) — branch
+`US-17-bug-fixes`.
+
+Hlášení uživatele (doslovné znění):
+
+> Nene, vidis to spatne. To, co vidis, je obrazek, ktere si konzistentne
+> deje, kdykoliv prijdu po delsi dobe zpet k aplikaci. Tj., zustanou tam
+> stara data z predchozi seance (ty jzustanou naveky ve stavu "Odjizdi") a
+> dole pod nimi jsou pak aktualni odjezdy. Spravi se to az manualnim
+> refreshem (nestaci auto-refresh aplikace po 30s ani tlacitko
+> "Aktulizovat") - je potřeba klasický refresh stránky (aka CTRL+R na
+> desktopu ci swipe down na mobilu)
+
+Po upřesnění (appka to nakonec sama srovná, jen ne hned):
+
+> jo, po nejake chvile zmizi, ale nestane se tak hned po auto-refreshi ci po
+> stisknuti tlacitka "Aktualizovat"
+
+**Příčina:** Chování odpovídalo AC z US-17 ("po 60 s od zmizení z API
+přesto odebere"), ale ten grace interval byl navržený pro krátké výpadky
+API *během* běžného používání, ne pro situaci "appka byla dlouho na
+pozadí". `missingSince` se u spoje nastaví až při prvním fetchi po
+návratu, takže reálné smazání přišlo až o 60-90 s později (2.-3. tik), což
+u zjevně den/večer starých spojů působilo jako appka "nikdy" nereaguje na
+refresh.
+
+**První pokus o opravu (zpětně nesprávný):** `mergeWithRetained()` mazala
+missing spoj okamžitě, pokud byl jeho `_predicted` čas víc než 5 minut v
+minulosti. Uživatel na to reagoval konkrétním protipříkladem (doslovné
+znění):
+
+> jak to bude fungovat, kdyz spoj se tesne pred prijezdem do zastavky
+> zasekne na posledni zacpane krizovatce na 10 minut? Predpokladam, ze
+> kdyz se do appky vratim po 8 minutach, tak protoze uz uplynulo 5 minut,
+> tak bude spoj nemilosrdne odstranen. Nebylo by lepsi, kdyby to vrazdeni
+> probehlo vzdycky az treba po 30 minutach, ale zaroven u vsech spoju,
+> ktere jsou ve stavu "odjizdi" by se provedlo opetovne zavolani API
+> kontolujici polohu a v pripade, ze by poloha odpovidala uz tomu, ze je
+> spoj skutecne fuc (nevim, co API vrati v pripade, ze uz spoj dokonce
+> dojel do sve cilove destinace).
+
+Platí: `_predicted` staré přes 5 minut nemusí znamenat starou seanci —
+stejně tak může jít o reálně zpožděný, stále relevantní spoj, kterému
+Golemio přestalo vracet predikci, protože ta už "měla" nastat (přesně
+důvod, proč US-17 vůbec vznikla). Navíc mazací podmínka byla `NEBO`, ne
+`A` — 60s grace lhůta smazala spoj i tehdy, když appka měla platná
+polohová data jasně říkající "ještě neodjel", což je v rozporu se
+zněním AC k US-17 ("*pokud se polohu nepodaří získat*, appka ho po 60 s
+odebere").
+
+**Oprava (finální)**
+- Grace lhůta (`MISSING_GRACE_MS`) teď platí jen tehdy, když appka pro
+  daný spoj nemá žádná platná polohová data (`!hasPositionData`) — přesně
+  podle původního AC. Pokud poloha existuje a nepotvrzuje odjezd, spoj
+  zůstává bez ohledu na to, jak dlouho chybí z `/pid/departureboards`
+  (appka polohu podle US-17 stejně dál pravidelně re-checkuje na každém
+  fetchi přes `refreshVehiclePositions()` — vlastní re-dotaz "je fakt
+  pryč?" navrhovaný uživatelem tedy appka dělá už dnes).
+- Zrušen heuristický `STALE_PREDICTED_MS` (5 min) test. Místo hádání podle
+  `_predicted` appka počítá `missingSince` od času posledního úspěšně
+  zpracovaného fetche (`lastFetchCompletedAt`), ne od "teď" — po dlouhé
+  odmlce appky (zavřená záložka, uspaný telefon) je tahle mezera obrovská,
+  takže spoj bez polohových dat (typicky spoj z předchozí seance/dne, pro
+  který Golemio přestalo mít data) grace lhůtu překročí a smaže se hned
+  při prvním fetchi po návratu. Při běžném kontinuálním provozu (mezera
+  ~`REFRESH_MS`) se chování prakticky neliší od počítání od "teď".
+- `activatePair()` navíc resetuje i `lastFetchCompletedAt`, aby zůstal
+  konzistentní s resetem `retainedDepartures`/`vehiclePositions` zavedeným
+  v předchozí opravě výš na této branchi.
+- Ověřeno izolovaným unit testem (6 scénářů, mimo DOM): stará seance bez
+  polohy mizí okamžitě po návratu; spoj zaseknutý 10+ minut v koloně s
+  platnou "ještě neodjel" polohou přežije; spoj bez polohy mizí po 60s
+  grace lhůtě jako dřív; potvrzený odjezd maže okamžitě; čerstvý spoj se
+  nemění.
+
+K otázce "co API vrátí po dojetí spoje do cílové destinace": nemám k tomu
+ověřená data (netestováno naživo) a nechci si to domýšlet. Pro správnost
+téhle opravy to ale není podstatné — appka porovnává `lastStopId` jen s
+*výchozí* zastávkou sledovaného úseku (`confirmedDeparted`), takže jakmile
+spoj tuhle zastávku opustí, appka ho z retenčního seznamu odstraní dřív,
+než by mohl dojet až do cíle. Zůstává tu jen užší, appkou už dřív (US-17)
+akceptované omezení: pokud appka minula i samotný okamžik odjezdu ze
+zdrojové zastávky (dlouhá odmlka, `lastStopId` mezitím "přeskočilo" na
+některou z dalších zastávek) a Golemio pro daný spoj přitom pořád vrací
+platná (byť nepotvrzující) polohová data, spoj by teoreticky mohl zůstat
+zobrazený déle, než by měl — stejná mezera existovala i v originální
+US-17 logice, tahle oprava ji nezavádí ani nerozšiřuje.
+
+**Stav:** Opraveno.
+
+---
+
 ## US-18 — Zmenšení objemu dat v localStorage bez zvýšení počtu API volání
 
 Doslovné zadání (z konverzace):
