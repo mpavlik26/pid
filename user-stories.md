@@ -828,6 +828,77 @@ US-17 logice, tahle oprava ji nezavádí ani nerozšiřuje.
 
 ---
 
+## US-17-bug-fixes — Oprava: spoje ze staré seance zůstávají navždy jako "odjíždí"
+
+Další záznam opravy chování z US-17 (retenční seznam spojů) — branch
+`US-17-bug-fixes`, reuse po předchozí opravě výš.
+
+Hlášení uživatele (doslovné znění):
+
+> Porad jsem branch US-19 jeste nemergnul do masteru na remote. Duvodem je
+> to, ze porad pri testovani v appce vidim ten stary bug s nemizejicimi
+> spoji po navratu do appky po delsi dobe. Viz screenshot.
+
+Přiložený screenshot ukazoval spoje "134 Dvorce" z předchozího večera
+(predikce 19:50, 20:03, 20:16) trvale zobrazené jako "odjíždí" s
+`poloha před 41169 s` (~11,4 h stará), zatímco skutečně aktuální spoje pod
+nimi (predikce 06:36, 06:43) se zobrazovaly správně s odpočtem.
+
+**Příčina:** Předchozí oprava na této branchi (`hasPositionData` blokuje
+grace lhůtu, pokud appka má *jakákoli* platná polohová data) nepočítala s
+tím, že "platná polohová data" mohou být libovolně stará.
+`refreshVehiclePositions()` při chybě fetchování polohy záměrně ponechává
+poslední známou hodnotu beze změny (aby UI neblikalo na "poloha: neznámá"
+při přechodném výpadku) — pokud ale API pro daný `tripId` přestane vracet
+data úplně (typicky proto, že spoj v reálném světě už dávno dojel a
+Golemio už ho nesleduje), `hasPositionData` zůstane `true` navždy s čím dál
+starší cachovanou hodnotou. Protože `confirmedDeparted` vyžaduje přesnou
+shodu `lastStopId` s výchozí zastávkou (ke které nemusí nikdy dojít) a
+grace lhůta platí jen `!hasPositionData`, spoj se z retenčního seznamu už
+nikdy neodstranil.
+
+**Návrh opravy byl před implementací probrán a odsouhlasen s uživatelem**
+(viz konverzace) — finální design má tři vzájemně se vylučující případy,
+navíc podmíněné tím, že spoj je ve stavu "Odjíždí" (ať už do něj appka
+dospěla countdownem na nule, nebo přes `trip.is_at_stop` z API):
+
+1. poloha vozidla se nikdy nepodařila získat -> maže se po
+   `MISSING_GRACE_MS` (60 s) od `missingSince`, stejně jako dosud.
+2. poloha se už někdy získat podařila, ale poslední úspěšný fetch
+   (`cached.fetchedAt`) je starší než `POSITION_FAILING_GRACE_MS` (90 s) ->
+   maže se (zjišťování polohy teď reálně selhává).
+3. poslední fetch byl úspěšný v posledních 90 s, ale samotná poloha
+   (`cached.originTimestamp`) je starší než `POSITION_STALE_MS` (5 min) ->
+   maže se (vozidlu se např. sekne GPS a poloha na serveru dál
+   neaktualizuje, přestože appka ji úspěšně dotahuje).
+
+Nezávisle na těchto třech (a bez ohledu na stav "Odjíždí") se spoj maže
+OKAMŽITĚ, jakmile poloha potvrdí, že vozidlo je už na cestě k další
+zastávce (`confirmedDeparted`) — to je nezpochybnitelný signál, kterému
+appka věří víc než predikčnímu `/departureboards`.
+
+Případy 1–3 jsou navíc podmíněné stavem "Odjíždí" (`isDepartingNow()`) —
+spoj, který ještě nedospěl k odjezdu (např. stojí v koloně těsně před
+zastávkou a countdown ještě neproběhl do minulosti), zůstává zobrazený bez
+ohledu na to, jak dlouho chybí v `/pid/departureboards` nebo jak stará je
+jeho poloha.
+
+`isDepartingNow()` je záměrně nezávislá na `US-19` (samostatná branch) —
+čte `dep.trip.is_at_stop` přímo z dat, ne přes `tick()`, aby `US-17-bug-fixes`
+a `US-19` zůstaly mergovatelné nezávisle na sobě.
+
+Ověřeno izolovaným unit testem (9 scénářů, mimo DOM): `confirmedDeparted`
+maže okamžitě i mimo stav "Odjíždí"; spoj mimo stav "Odjíždí" přežívá i
+dlouhou nepřítomnost bez polohy; všechny tři případy (60 s / 90 s / 5 min)
+zvlášť u hranice i pod ní; hraniční scénář "fetch OK, poloha 3 min stará"
+(spoj musí přežít, protože 3 min < `POSITION_STALE_MS`); spoj zaseknutý
+v koloně s čerstvou polohou přežívá; `trip.is_at_stop` samo o sobě spouští
+stav "Odjíždí".
+
+**Stav:** Opraveno, čeká na ruční otestování uživatelem.
+
+---
+
 ## US-18 — Zmenšení objemu dat v localStorage bez zvýšení počtu API volání
 
 Doslovné zadání (z konverzace):
