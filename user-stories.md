@@ -944,6 +944,48 @@ načítání dat.
 
 ---
 
+## US-19 — Okamžité "odjíždí" u spoje, který je dle polohy již v zastávce
+
+Zadání od uživatele (doslovné znění):
+
+> pokud dostaneme z polohoveho API informaci o tom, ze spoj je jiz v
+> zastavce, tak dava smysl u takoveho spoje zobrazit rovnou "odjizdi" a
+> necekat na jeho dopocet odjezdu do nuly
+
+**Kontext:** [US-8-bug-fixes](#us-8-bug-fixes--oprava-text-odjel-u-spoje-který-ještě-reálně-neodjel)
+už dřív řešila, že appka nesmí hlásit "odjel" u spoje, co reálně ještě
+neodjel — tehdejší oprava ale zůstala jen na textu ("odjíždí" místo
+"odjel") a odvození stavu od skutečné polohy vozidla si výslovně nechala
+na budoucí story. Tohle je ta story, jen z druhé strany: teď jde o to,
+aby appka na polohu reagovala i směrem dřív — a nedržela numerický
+countdown, když už je jasné, že spoj stojí v zastávce a odjíždí.
+
+**Zdroj polohové informace:** appka už dnes z odpovědi
+`/pid/departureboards` (Golemio) čte a zobrazuje `trip.is_at_stop`
+(viz "ve stanici"/"na trase" v `.meta` řádku) — je to údaj přímo od
+Golemia, bez jakéhokoli dalšího API volání navíc, dostupný pro každý
+spoj při každém pravidelném refreshi. Pro tuhle story se použije přesně
+tenhle příznak, ne samostatné dotazování `/vehiclepositions/{tripId}`
+(to je dražší mechanismus z US-8/US-17, co slouží k jinému účelu —
+detekci, že spoj už odjel ze zdrojové zastávky, ne že v ní právě stojí).
+
+**Akceptační kritéria**
+- Když `dep.trip.is_at_stop` je `true`, countdown daného spoje se zobrazí
+  jako "odjíždí" okamžitě, bez ohledu na to, kolik ještě zbývá do
+  `dep._predicted` podle lokálního dopočtu.
+- Chování se sjednotí s existující logikou v `formatCountdown` — spoj je
+  "odjíždí", pokud platí `past` (lokální dopočet) **nebo** `is_at_stop`
+  (polohová informace); ani jedna z podmínek tu druhou nenahrazuje.
+- Spoj podržený mechanismem `mergeWithRetained` (US-17) po výpadku
+  z čerstvé odpovědi si drží poslední známou hodnotu `is_at_stop` —
+  žádná zvláštní úprava tam není potřeba, chová se to jako u kteréhokoli
+  jiného pole zamrzlého `dep` objektu.
+- Žádné nové HTTP požadavky na Golemio API navíc oproti současnému stavu.
+
+**Stav:** Aktivní
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 

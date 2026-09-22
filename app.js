@@ -884,8 +884,12 @@
       const countdownEl = board.querySelector('[data-countdown="' + i + '"]');
       if (countdownEl){
         const {text, soon, past} = formatCountdown(dep._predicted);
-        countdownEl.textContent = past ? 'odjíždí' : text;
-        countdownEl.classList.toggle('soon', soon);
+        // US-19: Golemio u spoje stojícího v zastávce hlásí trip.is_at_stop
+        // rovnou v /pid/departureboards — pak nemá smysl čekat na lokální
+        // dopočet do nuly, "odjíždí" se zobrazí hned.
+        const atStop = !!(dep.trip && dep.trip.is_at_stop);
+        countdownEl.textContent = (past || atStop) ? 'odjíždí' : text;
+        countdownEl.classList.toggle('soon', soon || atStop);
       }
       const posEl = board.querySelector('[data-postag="' + i + '"]');
       if (posEl){
