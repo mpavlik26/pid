@@ -41,16 +41,27 @@
   // neuplyne MISSING_GRACE_MS (záložní doba pro případ, že se poloha vůbec
   // nepodaří zjistit).
   let retainedDepartures = new Map();
+  // US-17-bug-fixes: záložní doba pro spoj, u kterého se poloha vozidla NIKDY
+  // nepodařila získat (cached je undefined nebo 'failed') — viz komentář
+  // k retainedDepartures výš.
   const MISSING_GRACE_MS = 60000;
 
-  // US-17-bug-fixes: pokud se nám poloha vozidla naposledy úspěšně potvrdila
-  // před déle než POSITION_STALE_MS, přestáváme jí věřit pro účely rozhodování
-  // o smazání retained spoje. refreshVehiclePositions() při chybě záměrně
-  // ponechává poslední známou polohu (kvůli blikání v UI), ale to znamená, že
-  // spoj, jehož poloha přestane být vůbec dostupná, by jinak zůstal
-  // v retainedDepartures navždy — hasPositionData by bylo true donekonečna.
-  // 5 minut je bezpečně nad REFRESH_MS i RATE_WINDOW_MS, ať nedojde k false
-  // positive kvůli běžnému zpoždění dopočtu.
+  // US-17-bug-fixes: mazání retained spoje, který je ve stavu "Odjíždí" (viz
+  // isDepartingNow níž), se řídí třemi vzájemně se vylučujícími případy podle
+  // toho, jak dopadlo poslední zjišťování polohy vozidla:
+  //  1. poloha se nikdy nepodařila získat -> mažeme po MISSING_GRACE_MS od
+  //     missingSince (viz výš)
+  //  2. poloha se už někdy získat podařila, ale poslední úspěšný fetch je
+  //     starší než POSITION_FAILING_GRACE_MS -> mažeme (zjišťování polohy
+  //     teď reálně selhává)
+  //  3. poslední fetch byl úspěšný v posledních POSITION_FAILING_GRACE_MS, ale
+  //     samotná poloha (origin_timestamp) je starší než POSITION_STALE_MS ->
+  //     mažeme (vozidlu se např. sekne GPS a poloha na serveru dál
+  //     neaktualizuje)
+  // Pozor: nezávisle na těchto třech případech (a bez ohledu na stav
+  // "Odjíždí") se spoj maže OKAMŽITĚ, jakmile poloha potvrdí, že už je na
+  // cestě pryč ze zdrojové zastávky — viz confirmedDeparted níž.
+  const POSITION_FAILING_GRACE_MS = 90000;
   const POSITION_STALE_MS = 300000;
 
   // US-17-bug-fixes: čas, kdy naposledy proběhlo úspěšné sloučení čerstvé
@@ -720,6 +731,19 @@
   // seznamu. Spoj bez trip.id nelze mezi fetchi sledovat (nemá stabilní
   // klíč) — takový se chová postaru, zmizí hned, jakmile ho API přestane
   // vracet.
+  // US-17-bug-fixes: nezávislá definice "spoj je ve stavu Odjíždí" pro potřeby
+  // mergeWithRetained — nesmí se opírat o nic z US-19 (ten je na samostatné
+  // větvi), proto čte dep.trip.is_at_stop přímo, ne přes tick()/render().
+  // Podmínka "predikovaný odjezd je v minulosti" replikuje stejnou 5s
+  // toleranci jako formatCountdown(), ať se shoduje s tím, co appka reálně
+  // zobrazuje.
+  function isDepartingNow(dep, now){
+    const predicted = dep._predicted;
+    const pastPredicted = !!predicted && (predicted.getTime() - now) < -5000;
+    const atStop = !!(dep.trip && dep.trip.is_at_stop);
+    return pastPredicted || atStop;
+  }
+
   function mergeWithRetained(freshDepartures){
     const freshIds = new Set();
     freshDepartures.forEach(dep => {
@@ -747,26 +771,35 @@
 
       const cached = vehiclePositions.get(tripId);
       const originStopId = entry.dep.stop && entry.dep.stop.id;
-      // US-17-bug-fixes: nestačí, že jsme polohu NĚKDY úspěšně dostali —
-      // refreshVehiclePositions() při chybě starou hodnotu záměrně nechává
-      // ležet (viz její komentář), takže bez kontroly stáří by "hasPositionData"
-      // zůstalo true navždy i pro spoj, co už dávno reálně dojel a poloha se
-      // pro něj přestala vracet vůbec. cached.fetchedAt říká, kdy jsme polohu
-      // naposledy skutečně (úspěšně) potvrdili.
-      const hasPositionData = cached && cached !== 'failed'
-        && (now - cached.fetchedAt) < POSITION_STALE_MS;
-      const confirmedDeparted = hasPositionData && cached.lastStopId
+      // US-17-bug-fixes: "poloha se někdy úspěšně získala" - i když je stará
+      // nebo se teď nedaří ji obnovit (refreshVehiclePositions() při chybě
+      // starou hodnotu záměrně nechává ležet, viz její komentář).
+      const everHadPosition = !!cached && cached !== 'failed';
+      const confirmedDeparted = everHadPosition && cached.lastStopId
         && originStopId && cached.lastStopId === originStopId;
 
-      // US-17-bug-fixes: grace lhůta je záložní doba jen pro případ, že se
-      // poloha vůbec nepodaří zjistit (viz komentář k retainedDepartures
-      // výš) — pokud appka platná (dost čerstvá) polohová data má a ta
-      // nepotvrzují odjezd (spoj třeba stojí v koloně těsně před zastávkou),
-      // spoj musí zůstat bez ohledu na to, jak dlouho je pryč
-      // z /pid/departureboards.
-      const missingTooLongWithoutPosition = !hasPositionData && (now - entry.missingSince) >= MISSING_GRACE_MS;
+      // confirmedDeparted platí bez ohledu na cokoliv dalšího (viz komentář
+      // u POSITION_FAILING_GRACE_MS/POSITION_STALE_MS výš) — spoj se maže
+      // hned, i kdyby ještě nebyl ve stavu "Odjíždí".
+      let shouldDelete = confirmedDeparted;
 
-      if (confirmedDeparted || missingTooLongWithoutPosition){
+      // Tři gradované případy níž se týkají jen spojů ve stavu "Odjíždí" —
+      // dokud tam spoj není (např. čeká na odjezd, nebo stojí v koloně těsně
+      // před zastávkou a poloha to nepotvrzuje), musí zůstat bez ohledu na
+      // to, jak dlouho chybí v /pid/departureboards nebo jak stará je jeho
+      // poloha.
+      if (!shouldDelete && isDepartingNow(entry.dep, now)){
+        if (!everHadPosition){
+          shouldDelete = (now - entry.missingSince) >= MISSING_GRACE_MS;
+        } else {
+          const fetchFailingNow = (now - cached.fetchedAt) >= POSITION_FAILING_GRACE_MS;
+          const positionContentStale = !fetchFailingNow
+            && (now - cached.originTimestamp.getTime()) >= POSITION_STALE_MS;
+          shouldDelete = fetchFailingNow || positionContentStale;
+        }
+      }
+
+      if (shouldDelete){
         retainedDepartures.delete(tripId);
       }
     });

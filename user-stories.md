@@ -857,23 +857,43 @@ shodu `lastStopId` s výchozí zastávkou (ke které nemusí nikdy dojít) a
 grace lhůta platí jen `!hasPositionData`, spoj se z retenčního seznamu už
 nikdy neodstranil.
 
-**Oprava:** Zaveden `POSITION_STALE_MS` (5 minut — bezpečně nad
-`REFRESH_MS` i `RATE_WINDOW_MS`, ať nevznikne false positive z běžného
-zpoždění dopočtu). `hasPositionData` v `mergeWithRetained()` teď navíc
-vyžaduje, aby od posledního úspěšného potvrzení polohy (`cached.fetchedAt`)
-neuplynulo víc než `POSITION_STALE_MS`. Jakmile poloha přestane být
-potvrzovaná déle než tuhle dobu, appka ji dál nepovažuje za "platná data" a
-spoj podléhá stejné záložní grace lhůtě jako spoj bez polohy vůbec —
-zatímco spoj skutečně zaseknutý v koloně (poloha se dál úspěšně
-refreshuje každý cyklus) zůstává chráněný stejně jako dřív, protože jeho
-`fetchedAt` se pořád obnovuje.
+**Návrh opravy byl před implementací probrán a odsouhlasen s uživatelem**
+(viz konverzace) — finální design má tři vzájemně se vylučující případy,
+navíc podmíněné tím, že spoj je ve stavu "Odjíždí" (ať už do něj appka
+dospěla countdownem na nule, nebo přes `trip.is_at_stop` z API):
 
-Ověřeno izolovaným unit testem (5 scénářů, mimo DOM): spoj zaseknutý
-v koloně s čerstvou polohou zůstává retained i po dlouhé nepřítomnosti
-v `/pid/departureboards`; spoj se zastaralou (stale) polohou se po grace
-lhůtě smaže; spoj bez jakékoli polohy se smaže jako dřív; potvrzený odjezd
-(`confirmedDeparted`) maže okamžitě; čerstvý spoj z aktuální odpovědi
-zůstává nedotčen.
+1. poloha vozidla se nikdy nepodařila získat -> maže se po
+   `MISSING_GRACE_MS` (60 s) od `missingSince`, stejně jako dosud.
+2. poloha se už někdy získat podařila, ale poslední úspěšný fetch
+   (`cached.fetchedAt`) je starší než `POSITION_FAILING_GRACE_MS` (90 s) ->
+   maže se (zjišťování polohy teď reálně selhává).
+3. poslední fetch byl úspěšný v posledních 90 s, ale samotná poloha
+   (`cached.originTimestamp`) je starší než `POSITION_STALE_MS` (5 min) ->
+   maže se (vozidlu se např. sekne GPS a poloha na serveru dál
+   neaktualizuje, přestože appka ji úspěšně dotahuje).
+
+Nezávisle na těchto třech (a bez ohledu na stav "Odjíždí") se spoj maže
+OKAMŽITĚ, jakmile poloha potvrdí, že vozidlo je už na cestě k další
+zastávce (`confirmedDeparted`) — to je nezpochybnitelný signál, kterému
+appka věří víc než predikčnímu `/departureboards`.
+
+Případy 1–3 jsou navíc podmíněné stavem "Odjíždí" (`isDepartingNow()`) —
+spoj, který ještě nedospěl k odjezdu (např. stojí v koloně těsně před
+zastávkou a countdown ještě neproběhl do minulosti), zůstává zobrazený bez
+ohledu na to, jak dlouho chybí v `/pid/departureboards` nebo jak stará je
+jeho poloha.
+
+`isDepartingNow()` je záměrně nezávislá na `US-19` (samostatná branch) —
+čte `dep.trip.is_at_stop` přímo z dat, ne přes `tick()`, aby `US-17-bug-fixes`
+a `US-19` zůstaly mergovatelné nezávisle na sobě.
+
+Ověřeno izolovaným unit testem (9 scénářů, mimo DOM): `confirmedDeparted`
+maže okamžitě i mimo stav "Odjíždí"; spoj mimo stav "Odjíždí" přežívá i
+dlouhou nepřítomnost bez polohy; všechny tři případy (60 s / 90 s / 5 min)
+zvlášť u hranice i pod ní; hraniční scénář "fetch OK, poloha 3 min stará"
+(spoj musí přežít, protože 3 min < `POSITION_STALE_MS`); spoj zaseknutý
+v koloně s čerstvou polohou přežívá; `trip.is_at_stop` samo o sobě spouští
+stav "Odjíždí".
 
 **Stav:** Opraveno, čeká na ruční otestování uživatelem.
 
