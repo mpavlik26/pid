@@ -986,6 +986,75 @@ detekci, že spoj už odjel ze zdrojové zastávky, ne že v ní právě stojí)
 
 ---
 
+## US-20 — Zaručit minimální počet/pokrytí zobrazených spojů
+
+Zadání od uživatele (doslovné znění):
+
+> Ma byt presne o tom, ze dnes se deje, ze u nekterych kombinaci zastavek
+> zobrazujeme prilis malo spoju. Pokud spoje existuji, tak bych rad videl
+> alespon 5 spoju a vsechny spoje pokryvajicich alespon nejblizsich
+> 35minut. Zaroven je za me v poradku, ze pokud se nepodari najit onech 5
+> spoju jedoucich do 20 hodin, tak je nebudeme hledat dale. Zaroven bych
+> nechtel, abychom diky strankovani palili zbytecne moc requestu a trapilo
+> nas to z pohledu rate limittingu. A zaroven bych nechtel stahovat prilis
+> mnohi dat.
+>
+> Umim si predstavit,ze bychom si z kazdeho requestu a toho, co se nakonec
+> pouzije pro zobrazeni spocitali, jak ma vypadat request pro dalsi
+> stranku (tj. zkusit si na zaklade requestu odhadnout, o kolik vice
+> polozek bude vyhodne si pozadat, abychom se konecne dostali k
+> dostatecnemu poctu spoju k zobrazeni).
+
+**Diagnóza:** appka dnes posílá `/pid/departureboards` s pevným
+`limit=40`/`minutesAfter=90` a teprve po odpovědi klientsky filtruje jen
+povolené linky/směry. Golemio do těch 40 položek počítá všechny odjezdy ze
+zastávky (i cizí linky) — u frekventovanějšího uzlu se limit vyčerpá cizími
+linkami dřív, než se appka dostane k těm pár spojům, co ji zajímají, i
+kdyby jely v rámci 90minutového okna.
+
+**Akceptační kritéria**
+- **Cíl na jeden refresh:** zobrazit aspoň 5 spojů odpovídajících povoleným
+  linkám/směrům **a zároveň** všechny takové spoje do 35 minut od teď
+  (platí obojí současně — co je přísnější, to určuje potřebné pokrytí).
+  Hledá se maximálně 20 hodin dopředu od okamžiku requestu; pokud se ani
+  do 20 hodin nenajde 5 spojů, appka to vzdá a zobrazí, co má.
+- **Detekce, jestli mám "dost", bez zbytečné další stránky:** Golemio vrací
+  odjezdy seřazené vzestupně podle času (`order=real`), takže z jedné
+  odpovědi jde poznat garantované pokrytí:
+  - pokud přišlo míň položek, než byl poslaný `limit` → nic se neuřízlo,
+    mám kompletní data až do konce `minutesAfter` okna;
+  - pokud přišlo přesně `limit` položek → data jsou uříznutá, garantované
+    pokrytí sahá jen do času posledního vráceného spoje.
+- **Adaptivní dopočet dalšího requestu:** pokud cíl není splněný, appka si
+  z poměru "kolik vrácených položek odpovídalo povoleným linkám" a "jak
+  daleko do budoucnosti mám garantované pokrytí" spočítá odhad nového
+  `limit` (když se uřízlo dřív než na 35 min) nebo `minutesAfter` (když je
+  35 min pokrytých, ale shodných spojů je < 5), aby další request cíl
+  pokud možno splnil rovnou, bez nutnosti nekonečně malých stránek.
+- **Rozpočet requestů na Golemio v rámci jednoho refreshe:**
+  - pokud po prvním requestu appka má **aspoň 1** shodný spoj → povolen
+    max. 1 doplňující request (celkem 2 na refresh); zbytek do cíle (5 /
+    35 min) se dotáhne až při některém z dalších pravidelných refreshů,
+    ne násilím v rámci jednoho.
+  - pokud po prvním requestu appka má **0** shodných spojů → povoleno až
+    5 requestů v rámci jednoho refreshe (postupně zvětšovat okno), protože
+    nezobrazit nic je výrazně horší stav než zobrazit jen 1 spoj.
+- **Perzistence naučeného tvaru requestu:** poslední funkční
+  `{limit, minutesAfter}` pro danou dvojici zastávek se uloží do
+  `localStorage` (obdoba per-stanice cache z US-13) a příští pravidelné
+  refreshe z něj vychází místo pevného 40/90 — u dané dvojice se to časem
+  ustálí na 1 requestu/refresh místo opakovaného dohledávání od nuly.
+  Když aktuální tvar vrací výrazně víc, než je potřeba (a nebyl uříznutý),
+  appka ho postupně zase zmenší, ať nezůstane napořád stahovat zbytečně
+  moc dat z doby, kdy byla linka řidší (např. z večera), i po zbytek dne.
+- Žádný nový endpoint ani změna sdíleného rate limiteru (`acquireSlot`/
+  `golemioGet`, US-11) — jen jinak tvarované/vícenásobné volání existujícího
+  `/pid/departureboards` v rámci refreshe.
+
+**Stav:** Aktivní
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 
