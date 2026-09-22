@@ -904,14 +904,11 @@
     statusText.textContent = 'aktualizuji…';
     statusbar.classList.remove('live');
     try{
-      const params = new URLSearchParams();
-      BOARD_CONFIG.stopIds.forEach(id => params.append('ids[]', id));
-      params.set('limit', '40');
-      params.set('minutesAfter', '90');
-      params.set('order', 'real');
-      params.set('mode', 'departures');
-
-      const data = await Connections.golemioGet('/pid/departureboards?' + params.toString(), apiKey);
+      // US-20: místo jednoho pevného volání (limit=40/minutesAfter=90) si
+      // Connections.fetchDeparturesAdaptive podle potřeby vyžádá víc/větší
+      // requestů, dokud nemá aspoň 5 shodných spojů a pokrytí aspoň 35 min
+      // dopředu (nebo dokud nevyčerpá strop) — viz connections.js.
+      const data = await Connections.fetchDeparturesAdaptive(currentPair, apiKey, isAllowed);
       const freshDepartures = (data.departures || [])
         .filter(dep => {
           const rn = dep.route && dep.route.short_name;

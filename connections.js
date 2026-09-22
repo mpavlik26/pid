@@ -25,6 +25,13 @@
   const STOP_ARRIVALS_CACHE_KEY = 'pid_departures_stop_arrivals_cache';
   const TRIP_INFO_CACHE_KEY = 'pid_departures_trip_info_cache';
 
+  // Naučený tvar requestu (limit/minutesAfter) na departureboards pro danou
+  // dvojici zastávek (US-20) — na rozdíl od STOP_SEQ_CACHE_KEY apod. není
+  // vázaný na kalendářní den (viz loadDayCache), protože nejde o statická
+  // jízdní data, ale o průběžně se přizpůsobující odhad. Klíčovaný podle
+  // pairKey (název-název), stejně jako oblíbené/naposledy použité dvojice.
+  const REQUEST_SHAPE_CACHE_KEY = 'pid_departures_request_shape_cache';
+
   // Cache klíče, které appka umí kdykoli zahodit a znovu dopočítat/stáhnout
   // (US-14-bug-fixes) — na rozdíl od oblíbených/naposledy použitých dvojic,
   // což je uživatelský obsah. Na mobilu (zejména PWA přidaná na plochu na
@@ -35,8 +42,24 @@
     ROUTE_INDEX_KEY,
     STOP_SEQ_CACHE_KEY,
     STOP_ARRIVALS_CACHE_KEY,
-    TRIP_INFO_CACHE_KEY
+    TRIP_INFO_CACHE_KEY,
+    REQUEST_SHAPE_CACHE_KEY
   ];
+
+  // US-20: cíl na jeden refresh (aspoň 5 shodných spojů a pokrytí aspoň
+  // 35 min dopředu, co je přísnější), strop hledání do budoucnosti a
+  // rozpočet requestů na Golemio — viz akceptační kritéria v
+  // user-stories.md.
+  const TARGET_MIN_MATCHES = 5;
+  const TARGET_COVERAGE_MINUTES = 35;
+  const SEARCH_HORIZON_MINUTES = 20 * 60;
+  const REQUEST_ATTEMPTS_IF_SOME_MATCH = 2;
+  const REQUEST_ATTEMPTS_IF_NO_MATCH = 5;
+  const DEFAULT_REQUEST_SHAPE = { limit: 40, minutesAfter: 90 };
+  const MAX_GOLEMIO_LIMIT = 1000; // dokumentovaný strop /pid/departureboards
+  const REQUEST_SHAPE_MARGIN = 1.3; // rezerva při odhadu dalšího requestu
+  const SHRINK_OVERSHOOT_RATIO = 1.5; // zmenšovat jen při výrazném přetahu
+  const SHRINK_STEP = 0.5; // krok zmenšení k odhadnutému ideálu za refresh
 
   // Golemio limit: 20 req / 8 s na klíč. Místo pevné pauzy mezi requesty
   // (dřívější RATE_LIMIT_DELAY_MS) appka teď hospodaří s rozpočtem sdíleně
@@ -178,6 +201,181 @@
       }
       return res.json();
     }
+  }
+
+  // Čas (v minutách od teď) do predikovaného/plánovaného odjezdu spoje,
+  // podle stejné logiky jako predictedDate v app.js — držíme si vlastní
+  // kopii, ať connections.js nezávisí na app.js (viz oddělení modulů).
+  function departureMinutesFromNow(dep) {
+    const ts = (dep && dep.departure_timestamp) || {};
+    const iso = ts.predicted || ts.scheduled;
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    return (d.getTime() - Date.now()) / 60000;
+  }
+
+  function loadRequestShape(pair) {
+    try {
+      const raw = localStorage.getItem(REQUEST_SHAPE_CACHE_KEY);
+      if (!raw) return null;
+      const all = JSON.parse(raw);
+      const entry = all[pairKey(pair)];
+      return entry && Number.isFinite(entry.limit) && Number.isFinite(entry.minutesAfter)
+        ? { limit: entry.limit, minutesAfter: entry.minutesAfter }
+        : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function saveRequestShape(pair, shape) {
+    try {
+      const raw = localStorage.getItem(REQUEST_SHAPE_CACHE_KEY);
+      const all = raw ? JSON.parse(raw) : {};
+      all[pairKey(pair)] = { limit: shape.limit, minutesAfter: shape.minutesAfter };
+      trySetItem(REQUEST_SHAPE_CACHE_KEY, JSON.stringify(all));
+    } catch (e) {
+      console.warn('Nepodařilo se uložit naučený tvar requestu', e);
+    }
+  }
+
+  async function requestDepartureBoard(stopIds, shape, apiKey) {
+    const params = new URLSearchParams();
+    stopIds.forEach((id) => params.append('ids[]', id));
+    params.set('limit', String(shape.limit));
+    params.set('minutesAfter', String(shape.minutesAfter));
+    params.set('order', 'real');
+    params.set('mode', 'departures');
+    return golemioGet('/pid/departureboards?' + params.toString(), apiKey);
+  }
+
+  // Garantované pokrytí (v minutách od teď) plynoucí z jedné odpovědi
+  // (US-20) — Golemio vrací odjezdy vzestupně podle času (order=real):
+  // pokud přišlo míň položek než poslaný limit, nic se neuřízlo a pokrytí
+  // sahá do konce celého minutesAfter okna; jinak jen do času posledního
+  // vráceného spoje.
+  function coverageMinutesFromResponse(departures, shape) {
+    if (departures.length < shape.limit) return shape.minutesAfter;
+    const lastMinutes = departureMinutesFromNow(departures[departures.length - 1]);
+    return lastMinutes != null ? lastMinutes : 0;
+  }
+
+  // Odhadne tvar dalšího requestu, když cíl (5 shodných spojů a 35 min
+  // pokrytí) není splněný (US-20) — z poměru toho, co odpověď obsahovala,
+  // a toho, jak daleko do budoucnosti je garantované pokrytí.
+  function nextRequestShape(shape, departures, matched, coverageMinutes, truncated) {
+    if (truncated || coverageMinutes < TARGET_COVERAGE_MINUTES) {
+      // Uříznuto dřív, než jsme pokryli 35 min -> potřebujeme větší limit
+      // při stejně velkém okně.
+      const rate = departures.length / Math.max(coverageMinutes, 1);
+      const neededLimit = Math.ceil(rate * TARGET_COVERAGE_MINUTES * REQUEST_SHAPE_MARGIN);
+      return {
+        limit: Math.min(MAX_GOLEMIO_LIMIT, Math.max(shape.limit + 1, neededLimit)),
+        minutesAfter: shape.minutesAfter
+      };
+    }
+    // 35 min je pokrytých, ale shodných spojů je < 5 -> potřebujeme hledat
+    // dál do budoucnosti (a úměrně tomu i větší limit, ať se okno znovu
+    // neuřízne cizími linkami dřív, než tam nové shody vůbec budou).
+    const matchRate = matched.length / coverageMinutes;
+    const targetMinutesAfter = matched.length > 0
+      ? Math.ceil((TARGET_MIN_MATCHES / matchRate) * REQUEST_SHAPE_MARGIN)
+      : shape.minutesAfter * 2; // nulová hustota shod zatím neumožňuje odhad
+    const cappedMinutesAfter = Math.min(
+      SEARCH_HORIZON_MINUTES,
+      Math.max(shape.minutesAfter + 1, targetMinutesAfter)
+    );
+    const overallRate = departures.length / coverageMinutes;
+    const neededLimit = Math.ceil(overallRate * cappedMinutesAfter * REQUEST_SHAPE_MARGIN);
+    return {
+      limit: Math.min(MAX_GOLEMIO_LIMIT, Math.max(shape.limit, neededLimit)),
+      minutesAfter: cappedMinutesAfter
+    };
+  }
+
+  // Odhad minimálního tvaru requestu, který by ještě splnil cíl, z jedné
+  // NEuříznuté odpovědi (US-20) — základ pro postupné zmenšování naučeného
+  // tvaru, když aktuálně vrací výrazně víc, než je potřeba.
+  function estimateIdealShape(shape, departures, matched) {
+    let idealMinutesAfter = TARGET_COVERAGE_MINUTES;
+    if (matched.length >= TARGET_MIN_MATCHES) {
+      const fifthMinutes = departureMinutesFromNow(matched[TARGET_MIN_MATCHES - 1]);
+      if (fifthMinutes != null) idealMinutesAfter = Math.max(idealMinutesAfter, fifthMinutes);
+    }
+    idealMinutesAfter = Math.ceil(idealMinutesAfter * REQUEST_SHAPE_MARGIN);
+    const density = departures.length / shape.minutesAfter;
+    const idealLimit = Math.max(TARGET_MIN_MATCHES, Math.ceil(density * idealMinutesAfter * REQUEST_SHAPE_MARGIN));
+    return { limit: idealLimit, minutesAfter: idealMinutesAfter };
+  }
+
+  // Posune tvar requestu kus cesty směrem k odhadnutému ideálu, místo
+  // rovnou na minimum (US-20) — ať drobné výkyvy v provozu nezpůsobí, že
+  // příští refresh hned zase uřízne a musí dohledávat další stránku.
+  function shrinkTowardsIdeal(shape, ideal) {
+    const overshoot = shape.limit >= ideal.limit * SHRINK_OVERSHOOT_RATIO
+      || shape.minutesAfter >= ideal.minutesAfter * SHRINK_OVERSHOOT_RATIO;
+    if (!overshoot) return shape;
+    return {
+      limit: Math.max(ideal.limit, Math.round(shape.limit - (shape.limit - ideal.limit) * SHRINK_STEP)),
+      minutesAfter: Math.max(
+        ideal.minutesAfter,
+        Math.round(shape.minutesAfter - (shape.minutesAfter - ideal.minutesAfter) * SHRINK_STEP)
+      )
+    };
+  }
+
+  // Hlavní vstupní bod pro US-20: místo jednoho pevného volání
+  // departureboards (limit=40/minutesAfter=90) si podle potřeby vyžádá
+  // víc/větší requesty, dokud nemá aspoň 5 shodných spojů a pokrytí aspoň
+  // 35 min dopředu (nebo dokud nevyčerpá 20h horizont či rozpočet requestů
+  // na refresh), a naučený tvar requestu si uloží pro příští refreshe.
+  // Všechny requesty jdou přes golemioGet/acquireSlot beze změny — jen se
+  // jich pošle víc/jinak velkých.
+  async function fetchDeparturesAdaptive(pair, apiKey, isAllowedFn) {
+    let shape = loadRequestShape(pair) || Object.assign({}, DEFAULT_REQUEST_SHAPE);
+    let data = null;
+    let departures = [];
+    let matched = [];
+    let coverageMinutes = 0;
+    let truncated = false;
+    let targetMet = false;
+    let budget = REQUEST_ATTEMPTS_IF_NO_MATCH;
+    let attempt = 0;
+
+    for (;;) {
+      attempt++;
+      data = await requestDepartureBoard(pair.from.stopIds, shape, apiKey);
+      departures = data.departures || [];
+      matched = departures.filter((dep) => isAllowedFn(
+        dep.route && dep.route.short_name,
+        dep.trip && dep.trip.headsign
+      ));
+      truncated = departures.length >= shape.limit;
+      coverageMinutes = coverageMinutesFromResponse(departures, shape);
+
+      if (attempt === 1) {
+        budget = matched.length >= 1 ? REQUEST_ATTEMPTS_IF_SOME_MATCH : REQUEST_ATTEMPTS_IF_NO_MATCH;
+      }
+
+      targetMet = matched.length >= TARGET_MIN_MATCHES && coverageMinutes >= TARGET_COVERAGE_MINUTES;
+      const horizonExhausted = shape.minutesAfter >= SEARCH_HORIZON_MINUTES;
+      if (targetMet || horizonExhausted || attempt >= budget) break;
+
+      shape = nextRequestShape(shape, departures, matched, coverageMinutes, truncated);
+    }
+
+    // Zmenšovat naučený tvar zkoušíme jen po skutečně splněném cíli — když
+    // appka vzdala hledání na 20h horizontu s < 5 shodami, jde o řídce
+    // obsluhovanou dvojici, která ten velký tvar zase příští refresh
+    // potřebuje celý, ne zmenšit (viz US-20 v user-stories.md).
+    let finalShape = shape;
+    if (!truncated && targetMet) {
+      finalShape = shrinkTowardsIdeal(shape, estimateIdealShape(shape, departures, matched));
+    }
+    saveRequestShape(pair, finalShape);
+
+    return data;
   }
 
   // Golemio GTFS endpointy vrací GeoJSON FeatureCollection — properties
@@ -677,13 +875,17 @@
   // z per-stopId cache (stop_seq_cache, trip_info_cache, stop_arrivals_cache)
   // záznamy pro zastávky, které už nepatří žádné z aktuálně uložených dvojic.
   // Obsah zachovaných záznamů se nemění — jen se appka zbaví dat pro
-  // zastávky, které už nemá šanci znovu použít bez nového dopočtu.
+  // zastávky, které už nemá šanci znovu použít bez nového dopočtu. Stejně se
+  // (podle pairKey, ne stopId) prořezává i naučený tvar requestu pro US-20 —
+  // je to obdoba per-stanice cache, viz jeho definice výš.
   function pruneOrphanedStopCaches() {
     const keepStopIds = new Set();
+    const keepPairKeys = new Set();
     function collect(pair) {
       if (!pair) return;
       ((pair.from && pair.from.stopIds) || []).forEach((id) => keepStopIds.add(id));
       ((pair.to && pair.to.stopIds) || []).forEach((id) => keepStopIds.add(id));
+      keepPairKeys.add(pairKey(pair));
     }
     collect(loadStopPair());
     loadFavoritePairs().forEach(collect);
@@ -703,6 +905,20 @@
         console.warn('Nepodařilo se prořezat cache osiřelých zastávek', storageKey, e);
       }
     });
+
+    try {
+      const raw = localStorage.getItem(REQUEST_SHAPE_CACHE_KEY);
+      if (raw) {
+        const all = JSON.parse(raw);
+        const pruned = {};
+        Object.keys(all).forEach((key) => {
+          if (keepPairKeys.has(key)) pruned[key] = all[key];
+        });
+        localStorage.setItem(REQUEST_SHAPE_CACHE_KEY, JSON.stringify(pruned));
+      }
+    } catch (e) {
+      console.warn('Nepodařilo se prořezat cache naučeného tvaru requestu', e);
+    }
   }
 
   window.Connections = {
@@ -712,6 +928,7 @@
     loadDestinationArrivals,
     fetchVehiclePositions,
     golemioGet,
+    fetchDeparturesAdaptive,
     loadStopPair,
     saveStopPair,
     clearStopPair,
