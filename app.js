@@ -43,6 +43,16 @@
   let retainedDepartures = new Map();
   const MISSING_GRACE_MS = 60000;
 
+  // US-17-bug-fixes: pokud se nám poloha vozidla naposledy úspěšně potvrdila
+  // před déle než POSITION_STALE_MS, přestáváme jí věřit pro účely rozhodování
+  // o smazání retained spoje. refreshVehiclePositions() při chybě záměrně
+  // ponechává poslední známou polohu (kvůli blikání v UI), ale to znamená, že
+  // spoj, jehož poloha přestane být vůbec dostupná, by jinak zůstal
+  // v retainedDepartures navždy — hasPositionData by bylo true donekonečna.
+  // 5 minut je bezpečně nad REFRESH_MS i RATE_WINDOW_MS, ať nedojde k false
+  // positive kvůli běžnému zpoždění dopočtu.
+  const POSITION_STALE_MS = 300000;
+
   // US-17-bug-fixes: čas, kdy naposledy proběhlo úspěšné sloučení čerstvé
   // odpovědi API (viz mergeWithRetained). Slouží k odhadu, odkdy je spoj
   // *skutečně* pryč z API, když appka byla delší dobu na pozadí — v tu
@@ -737,15 +747,23 @@
 
       const cached = vehiclePositions.get(tripId);
       const originStopId = entry.dep.stop && entry.dep.stop.id;
-      const hasPositionData = cached && cached !== 'failed';
+      // US-17-bug-fixes: nestačí, že jsme polohu NĚKDY úspěšně dostali —
+      // refreshVehiclePositions() při chybě starou hodnotu záměrně nechává
+      // ležet (viz její komentář), takže bez kontroly stáří by "hasPositionData"
+      // zůstalo true navždy i pro spoj, co už dávno reálně dojel a poloha se
+      // pro něj přestala vracet vůbec. cached.fetchedAt říká, kdy jsme polohu
+      // naposledy skutečně (úspěšně) potvrdili.
+      const hasPositionData = cached && cached !== 'failed'
+        && (now - cached.fetchedAt) < POSITION_STALE_MS;
       const confirmedDeparted = hasPositionData && cached.lastStopId
         && originStopId && cached.lastStopId === originStopId;
 
       // US-17-bug-fixes: grace lhůta je záložní doba jen pro případ, že se
       // poloha vůbec nepodaří zjistit (viz komentář k retainedDepartures
-      // výš) — pokud appka platná polohová data má a ta nepotvrzují odjezd
-      // (spoj třeba stojí v koloně těsně před zastávkou), spoj musí zůstat
-      // bez ohledu na to, jak dlouho je pryč z /pid/departureboards.
+      // výš) — pokud appka platná (dost čerstvá) polohová data má a ta
+      // nepotvrzují odjezd (spoj třeba stojí v koloně těsně před zastávkou),
+      // spoj musí zůstat bez ohledu na to, jak dlouho je pryč
+      // z /pid/departureboards.
       const missingTooLongWithoutPosition = !hasPositionData && (now - entry.missingSince) >= MISSING_GRACE_MS;
 
       if (confirmedDeparted || missingTooLongWithoutPosition){

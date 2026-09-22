@@ -828,6 +828,57 @@ US-17 logice, tahle oprava ji nezavádí ani nerozšiřuje.
 
 ---
 
+## US-17-bug-fixes — Oprava: spoje ze staré seance zůstávají navždy jako "odjíždí"
+
+Další záznam opravy chování z US-17 (retenční seznam spojů) — branch
+`US-17-bug-fixes`, reuse po předchozí opravě výš.
+
+Hlášení uživatele (doslovné znění):
+
+> Porad jsem branch US-19 jeste nemergnul do masteru na remote. Duvodem je
+> to, ze porad pri testovani v appce vidim ten stary bug s nemizejicimi
+> spoji po navratu do appky po delsi dobe. Viz screenshot.
+
+Přiložený screenshot ukazoval spoje "134 Dvorce" z předchozího večera
+(predikce 19:50, 20:03, 20:16) trvale zobrazené jako "odjíždí" s
+`poloha před 41169 s` (~11,4 h stará), zatímco skutečně aktuální spoje pod
+nimi (predikce 06:36, 06:43) se zobrazovaly správně s odpočtem.
+
+**Příčina:** Předchozí oprava na této branchi (`hasPositionData` blokuje
+grace lhůtu, pokud appka má *jakákoli* platná polohová data) nepočítala s
+tím, že "platná polohová data" mohou být libovolně stará.
+`refreshVehiclePositions()` při chybě fetchování polohy záměrně ponechává
+poslední známou hodnotu beze změny (aby UI neblikalo na "poloha: neznámá"
+při přechodném výpadku) — pokud ale API pro daný `tripId` přestane vracet
+data úplně (typicky proto, že spoj v reálném světě už dávno dojel a
+Golemio už ho nesleduje), `hasPositionData` zůstane `true` navždy s čím dál
+starší cachovanou hodnotou. Protože `confirmedDeparted` vyžaduje přesnou
+shodu `lastStopId` s výchozí zastávkou (ke které nemusí nikdy dojít) a
+grace lhůta platí jen `!hasPositionData`, spoj se z retenčního seznamu už
+nikdy neodstranil.
+
+**Oprava:** Zaveden `POSITION_STALE_MS` (5 minut — bezpečně nad
+`REFRESH_MS` i `RATE_WINDOW_MS`, ať nevznikne false positive z běžného
+zpoždění dopočtu). `hasPositionData` v `mergeWithRetained()` teď navíc
+vyžaduje, aby od posledního úspěšného potvrzení polohy (`cached.fetchedAt`)
+neuplynulo víc než `POSITION_STALE_MS`. Jakmile poloha přestane být
+potvrzovaná déle než tuhle dobu, appka ji dál nepovažuje za "platná data" a
+spoj podléhá stejné záložní grace lhůtě jako spoj bez polohy vůbec —
+zatímco spoj skutečně zaseknutý v koloně (poloha se dál úspěšně
+refreshuje každý cyklus) zůstává chráněný stejně jako dřív, protože jeho
+`fetchedAt` se pořád obnovuje.
+
+Ověřeno izolovaným unit testem (5 scénářů, mimo DOM): spoj zaseknutý
+v koloně s čerstvou polohou zůstává retained i po dlouhé nepřítomnosti
+v `/pid/departureboards`; spoj se zastaralou (stale) polohou se po grace
+lhůtě smaže; spoj bez jakékoli polohy se smaže jako dřív; potvrzený odjezd
+(`confirmedDeparted`) maže okamžitě; čerstvý spoj z aktuální odpovědi
+zůstává nedotčen.
+
+**Stav:** Opraveno, čeká na ruční otestování uživatelem.
+
+---
+
 ## US-18 — Zmenšení objemu dat v localStorage bez zvýšení počtu API volání
 
 Doslovné zadání (z konverzace):
