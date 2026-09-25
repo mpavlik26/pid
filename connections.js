@@ -50,6 +50,14 @@
   // 35 min dopředu, co je přísnější), strop hledání do budoucnosti a
   // rozpočet requestů na Golemio — viz akceptační kritéria v
   // user-stories.md.
+  //
+  // Stránkování přes timeFrom (US-20, zjištění z 2026-09-25): Golemio
+  // /pid/departureboards vrací jen omezené časové okno relativně k
+  // timeFrom bez ohledu na to, jak velký limit/minutesAfter appka pošle —
+  // jediný způsob, jak se dostat dál do budoucnosti, je opakovat request
+  // s posunutým timeFrom (viz fetchDeparturesAdaptive). REQUEST_ATTEMPTS_*
+  // proto teď omezují počet STRÁNEK (requestů se zřetězeným timeFrom) na
+  // refresh, ne počet přepočtů jednoho pevného okna.
   const TARGET_MIN_MATCHES = 5;
   const TARGET_COVERAGE_MINUTES = 35;
   const SEARCH_HORIZON_MINUTES = 20 * 60;
@@ -60,6 +68,7 @@
   const REQUEST_SHAPE_MARGIN = 1.3; // rezerva při odhadu dalšího requestu
   const SHRINK_OVERSHOOT_RATIO = 1.5; // zmenšovat jen při výrazném přetahu
   const SHRINK_STEP = 0.5; // krok zmenšení k odhadnutému ideálu za refresh
+  const PAGE_OVERLAP_MS = 60 * 1000; // úmyslný přesah mezi stránkami (viz nextTimeFrom)
 
   // Golemio limit: 20 req / 8 s na klíč. Místo pevné pauzy mezi requesty
   // (dřívější RATE_LIMIT_DELAY_MS) appka teď hospodaří s rozpočtem sdíleně
@@ -215,6 +224,36 @@
     return (d.getTime() - Date.now()) / 60000;
   }
 
+  // Čas odjezdu spoje jako Date (US-20) — stejný zdroj jako
+  // departureMinutesFromNow, ale vrací absolutní okamžik místo minut od
+  // "teď", potřebné pro zřetězené timeFrom stránkování napříč requesty.
+  function departureDate(dep) {
+    const ts = (dep && dep.departure_timestamp) || {};
+    const iso = ts.predicted || ts.scheduled;
+    if (!iso) return null;
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function minutesBetween(fromDate, toDate) {
+    return (toDate.getTime() - fromDate.getTime()) / 60000;
+  }
+
+  // Klíč pro deduplikaci spojů při slučování stránek (US-20) — sousední
+  // stránky se záměrně mírně překrývají (viz nextTimeFrom), takže stejný
+  // spoj se může objevit ve dvou po sobě jdoucích odpovědích. trip.id je
+  // stabilní napříč requesty (stejně jako jinde v appce, viz app.js); pro
+  // vzácné spoje bez trip.id je fallback z času/linky/cílové stanice, ať
+  // se aspoň neduplikují jasně identické záznamy.
+  function departureDedupeKey(dep) {
+    const tripId = dep.trip && dep.trip.id;
+    if (tripId) return 'trip:' + tripId;
+    const date = departureDate(dep);
+    const route = dep.route && dep.route.short_name;
+    const headsign = dep.trip && dep.trip.headsign;
+    return 'ts:' + (date ? date.toISOString() : '') + '|' + route + '|' + headsign;
+  }
+
   function loadRequestShape(pair) {
     try {
       const raw = localStorage.getItem(REQUEST_SHAPE_CACHE_KEY);
@@ -240,30 +279,68 @@
     }
   }
 
-  async function requestDepartureBoard(stopIds, shape, apiKey) {
+  // timeFrom (US-20, volitelné) — ISO čas začátku okna pro stránkování přes
+  // opakované requesty (viz fetchDeparturesAdaptive). Když je null/undefined,
+  // parametr se do query stringu vůbec nepřidá a Golemio použije svoje
+  // vlastní "teď" — stejné chování jako dřív pro první request.
+  async function requestDepartureBoard(stopIds, shape, apiKey, timeFrom) {
     const params = new URLSearchParams();
     stopIds.forEach((id) => params.append('ids[]', id));
     params.set('limit', String(shape.limit));
     params.set('minutesAfter', String(shape.minutesAfter));
     params.set('order', 'real');
     params.set('mode', 'departures');
+    if (timeFrom) params.set('timeFrom', timeFrom);
     return golemioGet('/pid/departureboards?' + params.toString(), apiKey);
   }
 
-  // Garantované pokrytí (v minutách od teď) plynoucí z jedné odpovědi
-  // (US-20) — Golemio vrací odjezdy vzestupně podle času (order=real):
-  // pokud přišlo míň položek než poslaný limit, nic se neuřízlo a pokrytí
-  // sahá do konce celého minutesAfter okna; jinak jen do času posledního
-  // vráceného spoje.
-  function coverageMinutesFromResponse(departures, shape) {
-    if (departures.length < shape.limit) return shape.minutesAfter;
-    const lastMinutes = departureMinutesFromNow(departures[departures.length - 1]);
-    return lastMinutes != null ? lastMinutes : 0;
+  // Garantované pokrytí jedné stránky jako absolutní ISO čas (US-20) —
+  // Golemio vrací odjezdy vzestupně podle času (order=real). Bug fix
+  // (US-20, zjištění z 2026-09-25): dřív se při departures.length <
+  // shape.limit mylně předpokládalo pokrytí celého minutesAfter okna —
+  // Golemio ale vrací jen omezené okno bez ohledu na limit/minutesAfter,
+  // takže "neuříznuto limitem" neznamená "pokryto až do konce okna". Když
+  // stránka vrátila 0 spojů, jde tedy o konec požadovaného okna
+  // (pageTimeFrom + shape.minutesAfter); jinak o čas POSLEDNÍHO vráceného
+  // spoje. Vrací se absolutní čas (ne minuty od teď), protože při
+  // zřetězeném timeFrom stránkování je potřeba pracovat s konkrétním
+  // okamžikem té stránky, ne s "teď" — na minuty od teď se převádí až ve
+  // fetchDeparturesAdaptive pro vyhodnocení cíle/horizontu.
+  function coveredUntil(departures, pageTimeFrom, shape) {
+    if (!departures.length) {
+      return new Date(pageTimeFrom.getTime() + shape.minutesAfter * 60000);
+    }
+    const lastDate = departureDate(departures[departures.length - 1]);
+    return lastDate || pageTimeFrom;
   }
 
-  // Odhadne tvar dalšího requestu, když cíl (5 shodných spojů a 35 min
-  // pokrytí) není splněný (US-20) — z poměru toho, co odpověď obsahovala,
-  // a toho, jak daleko do budoucnosti je garantované pokrytí.
+  // Čas pro timeFrom DALŠÍHO requestu (US-20, upřesnění od uživatele):
+  // záměrně STEJNÝ nebo mírně DŘÍVĚJŠÍ než odjezd posledního spoje z téhle
+  // stránky (o PAGE_OVERLAP_MS), ne čas až za koncem pokrytí. Cíl: žádná
+  // mezera na hranici dvou stránek, i kdyby Golemio vracelo hraniční
+  // položky pro týž timeFrom nekonzistentně — výsledný malý překryv řeší
+  // dedup podle trip.id (departureDedupeKey) ve fetchDeparturesAdaptive.
+  // Nikdy se ale nevrátí čas dřívější než pageTimeFrom téhle stránky, ať
+  // appka nezacyklí na stejném okně, když stránka vrátí jen spoj těsně po
+  // pageTimeFrom (další stránka pak postoupí přes větší minutesAfter z
+  // nextRequestShape, i když timeFrom zůstane stejný).
+  function nextTimeFrom(departures, pageTimeFrom, shape) {
+    if (!departures.length) {
+      return coveredUntil(departures, pageTimeFrom, shape);
+    }
+    const lastDate = departureDate(departures[departures.length - 1]);
+    if (!lastDate) return coveredUntil(departures, pageTimeFrom, shape);
+    const candidate = new Date(lastDate.getTime() - PAGE_OVERLAP_MS);
+    return candidate.getTime() > pageTimeFrom.getTime() ? candidate : pageTimeFrom;
+  }
+
+  // Odhadne tvar DALŠÍ stránky, když cíl (5 shodných spojů a 35 min
+  // pokrytí) není splněný (US-20) — z poměru toho, co TATO stránka
+  // obsahovala, a toho, jak daleko dopředu OD SVÉHO VLASTNÍHO timeFrom
+  // sahá její garantované pokrytí (viz coveredUntil). Pracuje čistě nad
+  // jednou stránkou/odpovědí — volající (fetchDeparturesAdaptive) jí
+  // předává vždy jen data poslední stránky, ne kumulativní merge napříč
+  // stránkami.
   function nextRequestShape(shape, departures, matched, coverageMinutes, truncated) {
     if (truncated) {
       // Uříznuto -> potřebujeme větší limit, který pokryje celé UŽ
@@ -306,17 +383,23 @@
     };
   }
 
-  // Odhad minimálního tvaru requestu, který by ještě splnil cíl, z jedné
-  // NEuříznuté odpovědi (US-20) — základ pro postupné zmenšování naučeného
-  // tvaru, když aktuálně vrací výrazně víc, než je potřeba.
-  function estimateIdealShape(shape, departures, matched) {
+  // Odhad minimálního JEDNOSTRÁNKOVÉHO tvaru requestu (od timeFrom=teď),
+  // který by ještě splnil cíl (US-20) — základ pro postupné zmenšování
+  // naučeného tvaru, když aktuálně vrací výrazně víc, než je potřeba.
+  // Na rozdíl od nextRequestShape (jedna stránka) počítá nad SLOUČENÝMI
+  // daty ze všech stránek použitých v refreshi (mergedDepartures/matched)
+  // a nad celkovým pokrytím od now0 (totalMinutesAfter) — appka totiž při
+  // příštím refreshi startuje zase z jednoho "teď", takže naučený tvar má
+  // odpovídat tomu, co by stačilo na POKRYTÍ CELÉHO cíle od nuly, ne jen
+  // poslední navštívené stránce.
+  function estimateIdealShape(totalMinutesAfter, mergedDepartures, matched) {
     let idealMinutesAfter = TARGET_COVERAGE_MINUTES;
     if (matched.length >= TARGET_MIN_MATCHES) {
       const fifthMinutes = departureMinutesFromNow(matched[TARGET_MIN_MATCHES - 1]);
       if (fifthMinutes != null) idealMinutesAfter = Math.max(idealMinutesAfter, fifthMinutes);
     }
     idealMinutesAfter = Math.ceil(idealMinutesAfter * REQUEST_SHAPE_MARGIN);
-    const density = departures.length / shape.minutesAfter;
+    const density = mergedDepartures.length / Math.max(totalMinutesAfter, 1);
     const idealLimit = Math.max(TARGET_MIN_MATCHES, Math.ceil(density * idealMinutesAfter * REQUEST_SHAPE_MARGIN));
     return { limit: idealLimit, minutesAfter: idealMinutesAfter };
   }
@@ -339,17 +422,25 @@
 
   // Hlavní vstupní bod pro US-20: místo jednoho pevného volání
   // departureboards (limit=40/minutesAfter=90) si podle potřeby vyžádá
-  // víc/větší requesty, dokud nemá aspoň 5 shodných spojů a pokrytí aspoň
-  // 35 min dopředu (nebo dokud nevyčerpá 20h horizont či rozpočet requestů
-  // na refresh), a naučený tvar requestu si uloží pro příští refreshe.
-  // Všechny requesty jdou přes golemioGet/acquireSlot beze změny — jen se
-  // jich pošle víc/jinak velkých.
+  // víc stránek (requestů se zřetězeným timeFrom — Golemio vrací jen
+  // omezené okno bez ohledu na limit/minutesAfter, viz PAGE_OVERLAP_MS a
+  // komentáře u coveredUntil/nextTimeFrom), dokud nemá aspoň 5 shodných
+  // spojů a pokrytí aspoň 35 min dopředu (nebo dokud nevyčerpá 20h
+  // horizont či rozpočet stránek na refresh), a naučený tvar requestu si
+  // uloží pro příští refreshe. Všechny requesty jdou přes
+  // golemioGet/acquireSlot beze změny — jen se jich pošle víc/jinak
+  // velkých, s posouvaným timeFrom.
   async function fetchDeparturesAdaptive(pair, apiKey, isAllowedFn) {
+    const now0 = new Date(); // pevný referenční bod "teď" pro celý refresh
     let shape = loadRequestShape(pair) || Object.assign({}, DEFAULT_REQUEST_SHAPE);
-    let data = null;
-    let departures = [];
+    let pageTimeFrom = now0;
+    let timeFromParam = null; // první request nechává Golemio dopočítat "teď" samo
+
+    const mergedDepartures = []; // napříč stránkami, deduplikované (viz departureDedupeKey)
+    const seenKeys = new Set();
     let matched = [];
-    let coverageMinutes = 0;
+    let verifiedUntil = now0;
+    let pageDepartures = [];
     let truncated = false;
     let targetMet = false;
     let budget = REQUEST_ATTEMPTS_IF_NO_MATCH;
@@ -357,31 +448,52 @@
 
     for (;;) {
       attempt++;
-      data = await requestDepartureBoard(pair.from.stopIds, shape, apiKey);
-      departures = data.departures || [];
-      matched = departures.filter((dep) => isAllowedFn(
+      const data = await requestDepartureBoard(pair.from.stopIds, shape, apiKey, timeFromParam);
+      pageDepartures = data.departures || [];
+      truncated = pageDepartures.length >= shape.limit;
+
+      pageDepartures.forEach((dep) => {
+        const key = departureDedupeKey(dep);
+        if (seenKeys.has(key)) return;
+        seenKeys.add(key);
+        mergedDepartures.push(dep);
+      });
+      matched = mergedDepartures.filter((dep) => isAllowedFn(
         dep.route && dep.route.short_name,
         dep.trip && dep.trip.headsign
       ));
-      truncated = departures.length >= shape.limit;
-      coverageMinutes = coverageMinutesFromResponse(departures, shape);
+
+      verifiedUntil = coveredUntil(pageDepartures, pageTimeFrom, shape);
 
       if (attempt === 1) {
         budget = matched.length >= 1 ? REQUEST_ATTEMPTS_IF_SOME_MATCH : REQUEST_ATTEMPTS_IF_NO_MATCH;
       }
 
-      targetMet = matched.length >= TARGET_MIN_MATCHES && coverageMinutes >= TARGET_COVERAGE_MINUTES;
-      // Bug fix (US-20): horizonExhausted musí vycházet ze skutečně
-      // ověřeného pokrytí (coverageMinutes), ne z požadované velikosti
-      // okna (shape.minutesAfter) — když je odpověď uříznutá limitem
-      // (truncated), požadované okno může být klidně 20h, ale reálně
-      // ověřeno je jen pár desítek minut. Dřívější podmínka to
-      // ignorovala, takže se u frekventovaných uzlů (např. Smíchovské
-      // nádraží) naučený tvar zamrzl na uříznutém requestu navždy.
-      const horizonExhausted = coverageMinutes >= SEARCH_HORIZON_MINUTES;
+      // Bug fix (US-20): cíl/horizont se vyhodnocují vůči verifiedUntil
+      // (skutečně ověřené pokrytí napříč VŠEMI dosavadními stránkami od
+      // now0), ne vůči požadované velikosti okna poslední stránky — ta
+      // může být uříznutá limitem dřív, než reálně pokryje to, co si
+      // appka vyžádala.
+      const totalCoverageMinutes = minutesBetween(now0, verifiedUntil);
+      targetMet = matched.length >= TARGET_MIN_MATCHES && totalCoverageMinutes >= TARGET_COVERAGE_MINUTES;
+      const horizonExhausted = totalCoverageMinutes >= SEARCH_HORIZON_MINUTES;
       if (targetMet || horizonExhausted || attempt >= budget) break;
 
-      shape = nextRequestShape(shape, departures, matched, coverageMinutes, truncated);
+      const pageMatched = pageDepartures.filter((dep) => isAllowedFn(
+        dep.route && dep.route.short_name,
+        dep.trip && dep.trip.headsign
+      ));
+      const pageCoverageMinutes = minutesBetween(pageTimeFrom, verifiedUntil);
+      shape = nextRequestShape(shape, pageDepartures, pageMatched, pageCoverageMinutes, truncated);
+
+      if (!truncated) {
+        // Neuříznuto, ale cíl nesplněn -> okno téhle stránky je vyčerpané,
+        // posunout se na další stránku (záměrný přesah, viz nextTimeFrom).
+        pageTimeFrom = nextTimeFrom(pageDepartures, pageTimeFrom, shape);
+        timeFromParam = pageTimeFrom.toISOString();
+      }
+      // Uříznuto limitem -> ponechat stejné pageTimeFrom/timeFromParam,
+      // jen zkusit stejné okno znovu s větším limitem (viz nextRequestShape).
     }
 
     // Zmenšovat naučený tvar zkoušíme jen po skutečně splněném cíli — když
@@ -390,11 +502,12 @@
     // potřebuje celý, ne zmenšit (viz US-20 v user-stories.md).
     let finalShape = shape;
     if (!truncated && targetMet) {
-      finalShape = shrinkTowardsIdeal(shape, estimateIdealShape(shape, departures, matched));
+      const totalMinutesAfter = minutesBetween(now0, verifiedUntil);
+      finalShape = shrinkTowardsIdeal(shape, estimateIdealShape(totalMinutesAfter, mergedDepartures, matched));
     }
     saveRequestShape(pair, finalShape);
 
-    return data;
+    return { departures: mergedDepartures };
   }
 
   // Golemio GTFS endpointy vrací GeoJSON FeatureCollection — properties
