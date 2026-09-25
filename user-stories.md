@@ -1167,8 +1167,13 @@ Akceptační kritéria (implementováno, commit `0fdd22a`,
 > DD.MM. V pripade, ze je to jeste dnes, datum nezobrazujeme. Dopln to,
 > prosim, i do akceptacnich kriterii US-20.
 
-Akceptační kritéria a stav tohoto rozšíření se doplní po odsouhlasení
-návrhu řešení (viz `CLAUDE.md`, bod 2/4).
+Akceptační kritéria:
+- Pokud `verifiedUntil` spadá do jiného kalendářního dne než dnešek, zobrazí
+  se před časem i datum ve formátu `DD.MM.` (např. `26.09. 00:47:12`), a to
+  na obou místech, kde se pokrytí zobrazuje (status řádek "Odjezdy do:" i
+  hláška o nulovém výsledku).
+- Pokud `verifiedUntil` spadá ještě do dnešního dne, datum se nezobrazuje
+  (beze změny oproti předchozímu chování).
 
 **Stav:** Aktivní
 

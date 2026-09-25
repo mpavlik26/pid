@@ -629,6 +629,19 @@
     return date.toLocaleTimeString('cs-CZ', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
   }
 
+  // US-20: k formatClock přidá datum DD.MM., pokud date spadá mimo dnešek
+  // (rozšíření o zobrazení data u "Odjezdy do").
+  function formatCoverageUntil(date){
+    if (!date || isNaN(date.getTime())) return "—";
+    const now = new Date();
+    const isToday = date.getFullYear() === now.getFullYear() &&
+      date.getMonth() === now.getMonth() &&
+      date.getDate() === now.getDate();
+    const datePart = isToday ? '' :
+      (String(date.getDate()).padStart(2,'0') + '.' + String(date.getMonth()+1).padStart(2,'0') + '. ');
+    return datePart + formatClock(date);
+  }
+
   // US-10: záporné sec = spoj jede s náskokem, zobrazí se '−m:ss' (modře,
   // viz .delay-row.early v style.css), ne skryté pod 'na čas' jako dřív.
   function fmtDelaySeconds(sec){
@@ -823,7 +836,7 @@
       // US-20: appka hledala jen do coverageUntil (rozpočet requestů/limit
       // stránek na refresh) — bez tohohle času nejde poznat, jestli appka
       // opravdu nic nenašla, nebo se hledáním dostala jen kousek dopředu.
-      const untilText = coverageUntil ? (' Ověřeno do ' + formatClock(coverageUntil) + '.') : '';
+      const untilText = coverageUntil ? (' Ověřeno do ' + formatCoverageUntil(coverageUntil) + '.') : '';
       board.innerHTML = '<div class="empty">V nejbližší době nejede žádný přímý spoj.' + untilText + '</div>';
       return;
     }
@@ -939,7 +952,7 @@
       if (!destinationArrivalsLoaded) loadDestinationArrivals();
       const now = new Date();
       statusText.textContent = 'aktualizováno ' + now.toLocaleTimeString('cs-CZ', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-      coverageText.textContent = coverageUntil ? ('Odjezdy do: ' + formatClock(coverageUntil)) : '';
+      coverageText.textContent = coverageUntil ? ('Odjezdy do: ' + formatCoverageUntil(coverageUntil)) : '';
       statusbar.classList.add('live');
     }catch(e){
       console.error(e);
