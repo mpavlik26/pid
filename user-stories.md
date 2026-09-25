@@ -1150,6 +1150,23 @@ rozlišit.
 > by tam byla informace o tom, ze az do casu xx:xx:xx nebyl nalezen zadny
 > spoj mezi zvolenymi 2 zastavkami.
 
+Akceptační kritéria (implementováno, commit `0fdd22a`,
+`US-20-implemented-not-tested`; čeká na ruční otestování uživatelem):
+- `fetchDeparturesAdaptive` vrací kromě `departures` i `verifiedUntil` —
+  čas, do kterého refresh reálně ověřil data (poslední `timeFrom` stránka
+  bez posunu dál).
+- Pod statusbarem (řádek "aktualizováno HH:MM:SS") je nový řádek s textem
+  "Odjezdy do: HH:MM:SS" odpovídajícím `verifiedUntil`.
+- Hláška při nulovém výsledku obsahuje tentýž čas: "V nejbližší době
+  nejede žádný přímý spoj. Ověřeno do HH:MM:SS."
+
+**Rozšíření zadání o zobrazení data u "Odjezdy do" (doslovné znění):**
+
+> pokud je cas, do kdy mame stazena data o spojich jiz mimo dnesni den,
+> bylo by skvele, kdyby tam byl zobrazen vedle casu i datum ve formatu
+> DD.MM. V pripade, ze je to jeste dnes, datum nezobrazujeme. Dopln to,
+> prosim, i do akceptacnich kriterii US-20.
+
 Akceptační kritéria a stav tohoto rozšíření se doplní po odsouhlasení
 návrhu řešení (viz `CLAUDE.md`, bod 2/4).
 
