@@ -5,6 +5,7 @@
   let timer = null;
   let tickTimer = null;
   let currentDepartures = []; // last fetched, filtered, with parsed predicted Date
+  let coverageUntil = null; // US-20: čas, do kterého fetchDeparturesAdaptive ověřeně pokryla odjezdy
 
   // US-8: statický čas příjezdu do cílové zastávky, trip_id -> "HH:MM:SS".
   // Načte se po nastavení BOARD_CONFIG; dokud se to nepodaří, zkouší se to
@@ -110,6 +111,7 @@
   const board = document.getElementById('board');
   const statusbar = document.getElementById('statusbar');
   const statusText = document.getElementById('statusText');
+  const coverageText = document.getElementById('coverageText');
   const refreshBtn = document.getElementById('refreshBtn');
   const changeKeyBtn = document.getElementById('changeKeyBtn');
   const changeStopsBtn = document.getElementById('changeStopsBtn');
@@ -627,6 +629,19 @@
     return date.toLocaleTimeString('cs-CZ', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
   }
 
+  // US-20: k formatClock přidá datum DD.MM., pokud date spadá mimo dnešek
+  // (rozšíření o zobrazení data u "Odjezdy do").
+  function formatCoverageUntil(date){
+    if (!date || isNaN(date.getTime())) return "—";
+    const now = new Date();
+    const isToday = date.getFullYear() === now.getFullYear() &&
+      date.getMonth() === now.getMonth() &&
+      date.getDate() === now.getDate();
+    const datePart = isToday ? '' :
+      (String(date.getDate()).padStart(2,'0') + '.' + String(date.getMonth()+1).padStart(2,'0') + '. ');
+    return datePart + formatClock(date);
+  }
+
   // US-10: záporné sec = spoj jede s náskokem, zobrazí se '−m:ss' (modře,
   // viz .delay-row.early v style.css), ne skryté pod 'na čas' jako dřív.
   function fmtDelaySeconds(sec){
@@ -818,7 +833,11 @@
 
   function render(departures){
     if (!departures.length){
-      board.innerHTML = '<div class="empty">V nejbližší době nejede žádný přímý spoj.</div>';
+      // US-20: appka hledala jen do coverageUntil (rozpočet requestů/limit
+      // stránek na refresh) — bez tohohle času nejde poznat, jestli appka
+      // opravdu nic nenašla, nebo se hledáním dostala jen kousek dopředu.
+      const untilText = coverageUntil ? (' Ověřeno do ' + formatCoverageUntil(coverageUntil) + '.') : '';
+      board.innerHTML = '<div class="empty">V nejbližší době nejede žádný přímý spoj.' + untilText + '</div>';
       return;
     }
     board.innerHTML = departures.map((dep, i) => {
@@ -904,14 +923,12 @@
     statusText.textContent = 'aktualizuji…';
     statusbar.classList.remove('live');
     try{
-      const params = new URLSearchParams();
-      BOARD_CONFIG.stopIds.forEach(id => params.append('ids[]', id));
-      params.set('limit', '40');
-      params.set('minutesAfter', '90');
-      params.set('order', 'real');
-      params.set('mode', 'departures');
-
-      const data = await Connections.golemioGet('/pid/departureboards?' + params.toString(), apiKey);
+      // US-20: místo jednoho pevného volání (limit=40/minutesAfter=90) si
+      // Connections.fetchDeparturesAdaptive podle potřeby vyžádá víc/větší
+      // requestů, dokud nemá aspoň 5 shodných spojů a pokrytí aspoň 35 min
+      // dopředu (nebo dokud nevyčerpá strop) — viz connections.js.
+      const data = await Connections.fetchDeparturesAdaptive(currentPair, apiKey, isAllowed);
+      coverageUntil = data.verifiedUntil || null;
       const freshDepartures = (data.departures || [])
         .filter(dep => {
           const rn = dep.route && dep.route.short_name;
@@ -935,6 +952,7 @@
       if (!destinationArrivalsLoaded) loadDestinationArrivals();
       const now = new Date();
       statusText.textContent = 'aktualizováno ' + now.toLocaleTimeString('cs-CZ', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      coverageText.textContent = coverageUntil ? ('Odjezdy do: ' + formatCoverageUntil(coverageUntil)) : '';
       statusbar.classList.add('live');
     }catch(e){
       console.error(e);
