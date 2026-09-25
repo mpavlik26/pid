@@ -1012,6 +1012,39 @@ zastávky (i cizí linky) — u frekventovanějšího uzlu se limit vyčerpá ci
 linkami dřív, než se appka dostane k těm pár spojům, co ji zajímají, i
 kdyby jely v rámci 90minutového okna.
 
+**Zjištění z ručního testování (2026-09-25) — původní řešení nefunguje:**
+
+Po první implementaci (commity `US-20-implemented-not-tested` a
+`US-20-implemented-and-tested`) uživatel nahlásil, že se chování reálně
+nezměnilo — appka pro dvojici "Smíchovské nádraží" → "Příbram Školní
+kruhový objezd" trvale zobrazovala jen 1 spoj, přestože další jely v
+14:00, 14:50, 15:10 atd. Postupným ověřováním přímo proti Golemio API
+(bezpečně, přes konzoli prohlížeče uživatele, s jeho vlastním API klíčem,
+nikdy ne sdíleným se mnou) se ukázalo:
+
+- Předpoklad "míň položek než `limit` ⇒ kompletní data až do konce
+  `minutesAfter`" je **mylný**. Request s `limit=424&minutesAfter=1200`
+  vrátil jen 100 položek (tedy zdánlivě neuříznuto), ale reálně pokrýval
+  pouze ~35 minut (13:35–14:10), ne požadovaných 1200 minut. Golemio tedy
+  může vrátit méně položek, než je `limit`, aniž by to znamenalo pokrytí
+  celého požadovaného okna.
+- Zvětšování `offset` (stránkování v rámci téhož požadavku) nepomáhá —
+  `offset=100` na stejný dotaz vrátilo 0 položek. Data za hranicí toho, co
+  Golemio vrátilo, tam v tu chvíli prostě nejsou, ne že by je appka jen
+  nedostala kvůli stránkování.
+- Posun parametru **`timeFrom`** (referenční čas, od kterého se počítají
+  `minutesBefore`/`minutesAfter`; default = teď) **funguje** — dotaz s
+  `timeFrom` posunutým o hodinu dopředu a malým `minutesAfter` vrátil
+  spoje (14:00, 14:50, ...), které z místa "teď" s libovolně velkým
+  `minutesAfter`/`limit` vidět nebyly.
+
+Závěr: Golemio u `/pid/departureboards` vrací jen omezené okno relativně
+k `timeFrom`, bez ohledu na to, jak velké `minutesAfter`/`limit` se pošle
+z jednoho místa — ale to okno se dá posouvat dál do budoucna opakovaným
+voláním s postupně posouvaným `timeFrom`. Nafukování `minutesAfter`/`limit`
+z jediného požadavku (aktuální implementace) je proto z principu neúčinné
+a je potřeba nahradit "stránkováním v čase".
+
 **Akceptační kritéria**
 - **Cíl na jeden refresh:** zobrazit aspoň 5 spojů odpovídajících povoleným
   linkám/směrům **a zároveň** všechny takové spoje do 35 minut od teď
@@ -1019,18 +1052,20 @@ kdyby jely v rámci 90minutového okna.
   Hledá se maximálně 20 hodin dopředu od okamžiku requestu; pokud se ani
   do 20 hodin nenajde 5 spojů, appka to vzdá a zobrazí, co má.
 - **Detekce, jestli mám "dost", bez zbytečné další stránky:** Golemio vrací
-  odjezdy seřazené vzestupně podle času (`order=real`), takže z jedné
-  odpovědi jde poznat garantované pokrytí:
-  - pokud přišlo míň položek, než byl poslaný `limit` → nic se neuřízlo,
-    mám kompletní data až do konce `minutesAfter` okna;
-  - pokud přišlo přesně `limit` položek → data jsou uříznutá, garantované
-    pokrytí sahá jen do času posledního vráceného spoje.
-- **Adaptivní dopočet dalšího requestu:** pokud cíl není splněný, appka si
-  z poměru "kolik vrácených položek odpovídalo povoleným linkám" a "jak
-  daleko do budoucnosti mám garantované pokrytí" spočítá odhad nového
-  `limit` (když se uřízlo dřív než na 35 min) nebo `minutesAfter` (když je
-  35 min pokrytých, ale shodných spojů je < 5), aby další request cíl
-  pokud možno splnil rovnou, bez nutnosti nekonečně malých stránek.
+  odjezdy seřazené vzestupně podle času (`order=real`), ale garantované
+  pokrytí se **vždy** počítá z času posledního reálně vráceného spoje —
+  ne z toho, jestli počet položek dosáhl `limit`u (viz zjištění výše: i
+  neuříznutá odpověď může pokrývat výrazně méně, než byl požadovaný
+  `minutesAfter`).
+- **Stránkování v čase (`timeFrom`), ne jen nafukování okna z jednoho
+  místa:** pokud cíl není splněný, appka si spočítá odhad nového `limit`u
+  (když se odpověď uřízla počtem — tahle část zůstává beze změny, řeší
+  jiný problém: moc spojů/cizích linek v rámci jednoho okna) **a/nebo**
+  pošle další request s `timeFrom` posunutým na konec dosud ověřeného
+  pokrytí (na čas posledního vráceného spoje, nebo na konec okna, pokud
+  přišlo 0 spojů), aby se dostala dál do budoucnosti. Výsledky z
+  jednotlivých "stránek" se **sčítají/slučují** do jednoho výsledku pro
+  zobrazení, appka nezahazuje starší stránky.
 - **Rozpočet requestů na Golemio v rámci jednoho refreshe:**
   - pokud po prvním requestu appka má **aspoň 1** shodný spoj → povolen
     max. 1 doplňující request (celkem 2 na refresh); zbytek do cíle (5 /
@@ -1040,16 +1075,48 @@ kdyby jely v rámci 90minutového okna.
     5 requestů v rámci jednoho refreshe (postupně zvětšovat okno), protože
     nezobrazit nic je výrazně horší stav než zobrazit jen 1 spoj.
 - **Perzistence naučeného tvaru requestu:** poslední funkční
-  `{limit, minutesAfter}` pro danou dvojici zastávek se uloží do
-  `localStorage` (obdoba per-stanice cache z US-13) a příští pravidelné
-  refreshe z něj vychází místo pevného 40/90 — u dané dvojice se to časem
-  ustálí na 1 requestu/refresh místo opakovaného dohledávání od nuly.
-  Když aktuální tvar vrací výrazně víc, než je potřeba (a nebyl uříznutý),
-  appka ho postupně zase zmenší, ať nezůstane napořád stahovat zbytečně
-  moc dat z doby, kdy byla linka řidší (např. z večera), i po zbytek dne.
+  `{limit, minutesAfter}` (tvar jedné "stránky", `timeFrom` se nepersistuje
+  — to je stav jen v rámci jednoho refreshe) pro danou dvojici zastávek se
+  uloží do `localStorage` (obdoba per-stanice cache z US-13) a příští
+  pravidelné refreshe z něj vychází místo pevného 40/90 — u dané dvojice
+  se to časem ustálí na 1 requestu/refresh místo opakovaného dohledávání
+  od nuly. Když aktuální tvar vrací výrazně víc, než je potřeba (a nebyl
+  uříznutý), appka ho postupně zase zmenší, ať nezůstane napořád stahovat
+  zbytečně moc dat z doby, kdy byla linka řidší (např. z večera), i po
+  zbytek dne.
 - Žádný nový endpoint ani změna sdíleného rate limiteru (`acquireSlot`/
   `golemioGet`, US-11) — jen jinak tvarované/vícenásobné volání existujícího
   `/pid/departureboards` v rámci refreshe.
+
+**Další kroky (rozpracováno, pokračovat na jiném počítači):**
+
+Aktuální implementace v `connections.js` (commit `2a66473`,
+`US-20-implemented-and-tested`) odpovídá **staršímu, mylnému** návrhu
+(nafukování `minutesAfter`/`limit` z jednoho místa) — ten checkpoint byl
+udělaný před objevením chyby výše a reálně požadované chování nesplňuje.
+Zbývá doimplementovat:
+
+1. `coverageMinutesFromResponse` přepsat tak, aby garantované pokrytí
+   počítala vždy z času posledního reálně vráceného spoje (odstranit
+   větev, která při `departures.length < shape.limit` vrací rovnou
+   `shape.minutesAfter`).
+2. `fetchDeparturesAdaptive` přepracovat na stránkování přes `timeFrom`:
+   cyklus requestů, kde další `timeFrom` = čas posledního spoje z
+   předchozí stránky (+ malá rezerva, ať se stejný spoj nevrátí znovu),
+   nebo (při 0 spojích na stránce) konec právě dotázaného okna. Výsledné
+   spoje ze všech stránek slučovat do jednoho pole/odpovědi (dnes se
+   vrací jen poslední dílčí `data`).
+3. Logiku na růst `limit`u při uříznutí počtu (`truncated` větev v
+   `nextRequestShape`) ponechat beze změny — řeší jiný, pořád platný
+   problém (moc spojů/cizích linek v jednom okně).
+4. Rozpočet requestů na refresh (viz výše) se teď vztahuje na počet
+   *stránek* (chained `timeFrom` requestů), ne na opakované nafukování
+   téhož okna.
+5. Nezapomenout zvýšit `APP_VERSION` ve `version.js` (aktuálně `v38`) při
+   další úpravě `connections.js`, viz `CLAUDE.md`.
+6. Po implementaci a ručním otestování uživatelem znovu commitnout jako
+   `US-20-implemented-and-tested` (nahradí/doplní současný premature
+   checkpoint) podle běžného postupu z `CLAUDE.md`.
 
 **Stav:** Aktivní
 
