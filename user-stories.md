@@ -1088,13 +1088,14 @@ a je potřeba nahradit "stránkováním v čase".
   `golemioGet`, US-11) — jen jinak tvarované/vícenásobné volání existujícího
   `/pid/departureboards` v rámci refreshe.
 
-**Další kroky (rozpracováno, pokračovat na jiném počítači):**
+**Další kroky (hotovo, viz commit `00c695a` — `US-20-implemented-not-tested`):**
 
 Aktuální implementace v `connections.js` (commit `2a66473`,
-`US-20-implemented-and-tested`) odpovídá **staršímu, mylnému** návrhu
+`US-20-implemented-and-tested`) odpovídala **staršímu, mylnému** návrhu
 (nafukování `minutesAfter`/`limit` z jednoho místa) — ten checkpoint byl
-udělaný před objevením chyby výše a reálně požadované chování nesplňuje.
-Zbývá doimplementovat:
+udělaný před objevením chyby výše a reálně požadované chování nesplňoval.
+Kroky 1–4 níž jsou od commitu `00c695a` implementované, krok 5 hotový
+(`APP_VERSION` je na `v39`), krok 6 čeká na ruční otestování uživatelem:
 
 1. `coverageMinutesFromResponse` přepsat tak, aby garantované pokrytí
    počítala vždy z času posledního reálně vráceného spoje (odstranit
@@ -1117,6 +1118,40 @@ Zbývá doimplementovat:
 6. Po implementaci a ručním otestování uživatelem znovu commitnout jako
    `US-20-implemented-and-tested` (nahradí/doplní současný premature
    checkpoint) podle běžného postupu z `CLAUDE.md`.
+
+**Hlášení z ručního testování po nasazení stránkování (2026-09-25) a
+rozšíření zadání (doslovné znění):**
+
+> testoval jsem to. Prekvapuje me, ze v situaci, kdy je nejblizsi spojeni
+> mimo rozsah 100 odpovedi, ktere vraci departureboard API, tak se ihned
+> nepokusi v ramci stejneho refresh okna natahnout dalsich 100 spoju. Ve
+> specifikaci zadani je, ze se o to ma pokouset az 5x v ramci jednoho
+> refresh cyklu (30s) v pripade, ze neni nalezen ani jeden spoj k
+> zobrazeni.
+
+Diagnóza (statická analýza kódu, bez potvrzení z Network tabu): rozpočet
+`REQUEST_ATTEMPTS_IF_NO_MATCH = 5` se v `fetchDeparturesAdaptive` uplatní
+jen tehdy, když PRVNÍ stránka vrátí 0 shodných spojů — pokud najde byť 1
+shodu kdekoliv v okně první stránky (třeba za hodiny), rozpočet klesne na
+`REQUEST_ATTEMPTS_IF_SOME_MATCH = 2`. To může působit stejně jako
+"vzdá to po 1 requestu", aniž by šlo o skutečně nulový počet shod. Druhá
+možnost (viz zpráva níž) je, že už prvních 5 requestů reálně nic nenajde a
+appka se pak korektně vzdá na rozpočtu/horizontu — bez viditelného
+"pokrytí do kdy appka hledala" v UI se tyhle dvě situace zvenčí nedají
+rozlišit.
+
+> no, cele to muze byt o tom, ze ani na 5 requestu se nic nenajde. Abych
+> si to overil a zaroven, aby to davalo i z uzivatelskeho pohledu smysl,
+> tak by tomu pomohlo rozsireni zadani US-20 o 1 novy pozadavek a tim by
+> byla informace, do jakeho casu vypis pokryva spoje. Tento cas by se
+> zobrazoval (pod radkem o timestampu, kdy byla naposledy aktualizace s
+> textem: "Odjezdy do: xx:xx:xx"). A tento cas by se zobrazoval i v
+> textu, ktery se zobrazuje v pripade, ze nebyl nalezen zadny spoj. Takto
+> by tam byla informace o tom, ze az do casu xx:xx:xx nebyl nalezen zadny
+> spoj mezi zvolenymi 2 zastavkami.
+
+Akceptační kritéria a stav tohoto rozšíření se doplní po odsouhlasení
+návrhu řešení (viz `CLAUDE.md`, bod 2/4).
 
 **Stav:** Aktivní
 
