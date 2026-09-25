@@ -265,15 +265,27 @@
   // pokrytí) není splněný (US-20) — z poměru toho, co odpověď obsahovala,
   // a toho, jak daleko do budoucnosti je garantované pokrytí.
   function nextRequestShape(shape, departures, matched, coverageMinutes, truncated) {
-    if (truncated || coverageMinutes < TARGET_COVERAGE_MINUTES) {
-      // Uříznuto dřív, než jsme pokryli 35 min -> potřebujeme větší limit
-      // při stejně velkém okně.
+    if (truncated) {
+      // Uříznuto -> potřebujeme větší limit, který pokryje celé UŽ
+      // požadované okno (shape.minutesAfter), ne jen 35minutovou podlahu.
+      // Bug fix (US-20): dřív se tu cílilo jen na TARGET_COVERAGE_MINUTES
+      // bez ohledu na to, jak velké okno appka ve skutečnosti žádala — u
+      // frekventovaného uzlu, kde se okno mezitím rozrostlo (viz druhá
+      // větev níž) třeba až na SEARCH_HORIZON_MINUTES, to zajišťovalo
+      // limitu růst jen v mikroskopických krocích (rate * 35 min), takže
+      // appka se prakticky navždy zasekla na stejném uříznutém requestu.
       const rate = departures.length / Math.max(coverageMinutes, 1);
-      const neededLimit = Math.ceil(rate * TARGET_COVERAGE_MINUTES * REQUEST_SHAPE_MARGIN);
+      const neededLimit = Math.ceil(rate * shape.minutesAfter * REQUEST_SHAPE_MARGIN);
       return {
         limit: Math.min(MAX_GOLEMIO_LIMIT, Math.max(shape.limit + 1, neededLimit)),
         minutesAfter: shape.minutesAfter
       };
+    }
+    if (coverageMinutes < TARGET_COVERAGE_MINUTES) {
+      // Neuříznuto, ale samotné okno je menší než 35minutová podlaha —
+      // v praxi nedosažitelné (minutesAfter nikdy neklesne pod výchozích
+      // 90 min), ponecháno jen jako bezpečnostní pojistka.
+      return { limit: shape.limit, minutesAfter: TARGET_COVERAGE_MINUTES };
     }
     // 35 min je pokrytých, ale shodných spojů je < 5 -> potřebujeme hledat
     // dál do budoucnosti (a úměrně tomu i větší limit, ať se okno znovu
@@ -359,7 +371,14 @@
       }
 
       targetMet = matched.length >= TARGET_MIN_MATCHES && coverageMinutes >= TARGET_COVERAGE_MINUTES;
-      const horizonExhausted = shape.minutesAfter >= SEARCH_HORIZON_MINUTES;
+      // Bug fix (US-20): horizonExhausted musí vycházet ze skutečně
+      // ověřeného pokrytí (coverageMinutes), ne z požadované velikosti
+      // okna (shape.minutesAfter) — když je odpověď uříznutá limitem
+      // (truncated), požadované okno může být klidně 20h, ale reálně
+      // ověřeno je jen pár desítek minut. Dřívější podmínka to
+      // ignorovala, takže se u frekventovaných uzlů (např. Smíchovské
+      // nádraží) naučený tvar zamrzl na uříznutém requestu navždy.
+      const horizonExhausted = coverageMinutes >= SEARCH_HORIZON_MINUTES;
       if (targetMet || horizonExhausted || attempt >= budget) break;
 
       shape = nextRequestShape(shape, departures, matched, coverageMinutes, truncated);
