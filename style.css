@@ -133,6 +133,13 @@ h1 .arrow{color:var(--amber);}
 }
 .refresh-btn:hover{border-color:var(--amber-dim);color:var(--text);}
 
+.coverage-text{
+  font-size:11px;
+  color:var(--text-dim);
+  font-family:var(--mono);
+  margin:-8px 0 14px;
+}
+
 .board{
   background:var(--panel);
   border:1px solid var(--line);

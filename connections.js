@@ -507,7 +507,7 @@
     }
     saveRequestShape(pair, finalShape);
 
-    return { departures: mergedDepartures };
+    return { departures: mergedDepartures, verifiedUntil };
   }
 
   // Golemio GTFS endpointy vrací GeoJSON FeatureCollection — properties

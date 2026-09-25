@@ -5,6 +5,7 @@
   let timer = null;
   let tickTimer = null;
   let currentDepartures = []; // last fetched, filtered, with parsed predicted Date
+  let coverageUntil = null; // US-20: čas, do kterého fetchDeparturesAdaptive ověřeně pokryla odjezdy
 
   // US-8: statický čas příjezdu do cílové zastávky, trip_id -> "HH:MM:SS".
   // Načte se po nastavení BOARD_CONFIG; dokud se to nepodaří, zkouší se to
@@ -110,6 +111,7 @@
   const board = document.getElementById('board');
   const statusbar = document.getElementById('statusbar');
   const statusText = document.getElementById('statusText');
+  const coverageText = document.getElementById('coverageText');
   const refreshBtn = document.getElementById('refreshBtn');
   const changeKeyBtn = document.getElementById('changeKeyBtn');
   const changeStopsBtn = document.getElementById('changeStopsBtn');
@@ -818,7 +820,11 @@
 
   function render(departures){
     if (!departures.length){
-      board.innerHTML = '<div class="empty">V nejbližší době nejede žádný přímý spoj.</div>';
+      // US-20: appka hledala jen do coverageUntil (rozpočet requestů/limit
+      // stránek na refresh) — bez tohohle času nejde poznat, jestli appka
+      // opravdu nic nenašla, nebo se hledáním dostala jen kousek dopředu.
+      const untilText = coverageUntil ? (' Ověřeno do ' + formatClock(coverageUntil) + '.') : '';
+      board.innerHTML = '<div class="empty">V nejbližší době nejede žádný přímý spoj.' + untilText + '</div>';
       return;
     }
     board.innerHTML = departures.map((dep, i) => {
@@ -909,6 +915,7 @@
       // requestů, dokud nemá aspoň 5 shodných spojů a pokrytí aspoň 35 min
       // dopředu (nebo dokud nevyčerpá strop) — viz connections.js.
       const data = await Connections.fetchDeparturesAdaptive(currentPair, apiKey, isAllowed);
+      coverageUntil = data.verifiedUntil || null;
       const freshDepartures = (data.departures || [])
         .filter(dep => {
           const rn = dep.route && dep.route.short_name;
@@ -932,6 +939,7 @@
       if (!destinationArrivalsLoaded) loadDestinationArrivals();
       const now = new Date();
       statusText.textContent = 'aktualizováno ' + now.toLocaleTimeString('cs-CZ', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      coverageText.textContent = coverageUntil ? ('Odjezdy do: ' + formatClock(coverageUntil)) : '';
       statusbar.classList.add('live');
     }catch(e){
       console.error(e);
