@@ -100,7 +100,10 @@
   // GTFS feed se může aktualizovat kdykoli během dne, takže položka stažená
   // těsně před půlnocí nemá "přežít" do stejného času druhý den.
   function todayKey() {
-    const d = new Date();
+    return dayKey(new Date());
+  }
+
+  function dayKey(d) {
     const mm = String(d.getMonth() + 1).padStart(2, '0');
     const dd = String(d.getDate()).padStart(2, '0');
     return d.getFullYear() + '-' + mm + '-' + dd;
@@ -1053,7 +1056,51 @@
     }
   }
 
+  // US-21: uložené `allowed` (seznam povolených linek a směrů) se dopočítává
+  // jen při kliknutí na „Najít spoje“ a pak se přebírá z uložené dvojice
+  // navždy — nová/výlukově zavedená linka se tak u dvojice, kterou už appka
+  // zná, nikdy neobjeví. Dvojice je "zastaralá", pokud její `computedAt`
+  // není z dnešního kalendářního dne (nebo chybí/je poškozený).
+  function isPairStale(pair) {
+    if (!pair || !pair.computedAt) return true;
+    const d = new Date(pair.computedAt);
+    if (isNaN(d.getTime())) return true;
+    return dayKey(d) !== todayKey();
+  }
+
+  // Přepíše uloženou kopii dvojice (podle pairKey) ve všech třech úložištích
+  // — aktivní, oblíbené, naposledy použité — beze změny pořadí/složení. Ve
+  // které z nich dvojice není, tam se nepřidává.
+  function replaceStoredPair(updated) {
+    const key = pairKey(updated);
+    const active = loadStopPair();
+    if (active && pairKey(active) === key) trySetItem(STOP_PAIR_KEY, JSON.stringify(updated));
+    const favs = loadFavoritePairs();
+    if (favs.some((p) => pairKey(p) === key)) {
+      saveFavoritePairs(favs.map((p) => (pairKey(p) === key ? updated : p)));
+    }
+    const recents = loadRecentPairs();
+    if (recents.some((p) => pairKey(p) === key)) {
+      trySetItem(STOP_PAIR_RECENTS_KEY, JSON.stringify(recents.map((p) => (pairKey(p) === key ? updated : p))));
+    }
+  }
+
+  // US-21: přepočítá `allowed` zastaralé dvojice a uloží ji zpět. Vrací
+  // aktualizovanou dvojici, nebo null, pokud nebylo co/jak obnovit (dvojice
+  // je z dneška, přepočet vyšel prázdný) — volající pak ponechá staré
+  // `allowed`. Chyby (včetně 401/403) probublají volajícímu; `computedAt`
+  // se při nich nemění, takže se přepočet zkusí při příští aktivaci.
+  async function refreshStaleAllowed(pair, apiKey) {
+    if (!isPairStale(pair)) return null;
+    const allowed = await computeAllowedRoutes(pair.from.stopIds, pair.to.stopIds, apiKey);
+    if (!allowed.length) return null;
+    const updated = Object.assign({}, pair, { allowed, computedAt: new Date().toISOString() });
+    replaceStoredPair(updated);
+    return updated;
+  }
+
   window.Connections = {
+    refreshStaleAllowed,
     searchStops,
     warmStopIndex,
     computeAllowedRoutes,
