@@ -294,6 +294,31 @@
     loadDestinationArrivals();
     fetchDepartures();
     startTimer();
+    refreshAllowedInBackground(pair);
+  }
+
+  // US-21: uložené `allowed` dvojice se jednou za kalendářní den přepočítá
+  // (viz Connections.refreshStaleAllowed), aby se v něm objevily nově
+  // zavedené/výlukové linky. Běží na pozadí — odjezdy se zobrazují hned
+  // podle starého `allowed` a nové se projeví od nejbližšího refreshe.
+  async function refreshAllowedInBackground(pair){
+    try{
+      const updated = await Connections.refreshStaleAllowed(pair, apiKey);
+      // mezitím mohl uživatel přepnout na jinou dvojici
+      if (!updated || currentPair !== pair) return;
+      currentPair = updated;
+      BOARD_CONFIG.allowed = updated.allowed;
+    }catch(e){
+      if (e.status === 401 || e.status === 403){
+        stopTimer();
+        clearKey();
+        apiKey = null;
+        showSetup('API klíč nebyl přijat (chyba ' + e.status + '). Zkontrolujte, že jste ho zkopírovali celý.');
+        return;
+      }
+      // jiná chyba: zůstává staré `allowed`, přepočet se zkusí při příští aktivaci
+      console.warn('Nepodařilo se obnovit seznam linek dvojice', e);
+    }
   }
 
   // Zahřeje klientský index zastávek (viz Connections.warmStopIndex), aby

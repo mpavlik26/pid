@@ -1226,7 +1226,7 @@ dvojice, nejvýše jednou za kalendářní den na dvojici.
 - Přepočet se nespouští pro všechny uložené dvojice najednou, jen pro tu,
   která se právě aktivuje.
 
-**Stav:** Aktivní
+**Stav:** Aktivní, implementováno (verze v42), ručně otestováno uživatelem.
 
 ---
 
