@@ -1179,6 +1179,57 @@ Akceptační kritéria:
 
 ---
 
+## US-21 — Uložený seznam povolených linek se nikdy neobnovuje (chybí výlukové linky)
+
+Zadání od uživatele (doslovné znění):
+
+> Od vcerejska jezdi mezi zastavkami Sidliste Modrany a Smichovske nadrazi
+> pres zastavku Pristaviste vylukova linka cislo 40. Kdyz si dam dnes
+> vyhledat spoje mezi stanicmi Pristaviste a Smichovske nadrazi (ktere
+> vyuzivam denne), tak mi to spoje linky cislo 40 nenajde (ostatni linky,
+> ktere tam jezdi bezne (tedy pred vylukou) to najde v pohode). V okamziku,
+> kdy si dam vyhledat spoje jen mezi zastavkami Pristaviste a Lihovar
+> (Lihovar je jedna stanice pred Smichovskym nadrazim), spoje linky cislo 40
+> se najdou. Predpokladam, ze je to kvuli nejakym nacacheovanym datum.
+> Spoje mezi Pristavistem a Smichovskym nadrazim obsahujici i spoje linky
+> cislo 40 to najde, paklize se na ne chci podivat z prohlizece, kdy jsem
+> pred tim nikdy spoje mezi Pristavistem a Smichovskym nadrazim nehledal.
+> Prosim o analyzu priciny tohoto problemu.
+
+**Příčina (analýza):** seznam povolených linek a směrů (`pair.allowed`) se
+dopočítá jen jednou, při kliknutí na „Najít spoje“, a uloží se přímo do
+objektu dvojice (aktivní dvojice, naposledy použité, oblíbené). Při dalším
+spuštění appky nebo výběru z oblíbených/naposledy použitých se přebírá beze
+změny (`activatePair`), `computedAt` se nikdy nečte. Denní cache GTFS dat
+(`loadDayCache`) s tím nesouvisí. Filtr `isAllowed` pak zahodí každý odjezd,
+jehož linka/směr v uloženém seznamu není — typicky nová nebo výlukově
+zavedená linka.
+
+**Schválený postup (2026-10-04):** `allowed` se přepočítá líně při aktivaci
+dvojice, nejvýše jednou za kalendářní den na dvojici.
+
+**Akceptační kritéria**
+- Při aktivaci dvojice (start appky, výběr z oblíbených/naposledy použitých)
+  se porovná kalendářní den z `computedAt` s dneškem. Pokud je starší (nebo
+  `computedAt` chybí), `allowed` se přepočítá přes `computeAllowedRoutes`
+  pro `from.stopIds` a `to.stopIds`.
+- Přepočtená dvojice (nové `allowed`, nové `computedAt`) se uloží zpět do
+  aktivní dvojice, oblíbených i naposledy použitých.
+- Pokud je `computedAt` z dneška, žádný přepočet ani nové API volání se
+  nedělá (chování beze změny).
+- Pokud přepočet selže (síť, 429, atd.), appka pokračuje se starým
+  `allowed` a `computedAt` se nemění, takže se přepočet zkusí při příští
+  aktivaci. Chyba 401/403 se řeší jako jinde (návrat na zadání klíče).
+- Pokud přepočet vrátí prázdný seznam, ponechá se staré `allowed`.
+- Přepočet běží na pozadí: zobrazení odjezdů nečeká, po dokončení se nové
+  `allowed` projeví od nejbližšího refreshe.
+- Přepočet se nespouští pro všechny uložené dvojice najednou, jen pro tu,
+  která se právě aktivuje.
+
+**Stav:** Aktivní
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 
