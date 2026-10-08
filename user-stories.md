@@ -1305,7 +1305,13 @@ formát cache pozic se nemění.
 v US-20 počítá jen skutečně přímé spoje). Dokud množina není, board ukazuje
 „Ověřuji přímé spoje…"; při selhání dostavění chybovou hlášku.
 
-**Stav:** Opraveno, čeká na ruční otestování.
+**Výsledek ručního testu (2026-10-08):** funkčně správně (spoje linky 10
+zmizely), ale appka je kvůli ověřování přes `trip_id` **výrazně pomalá** —
+cena za přesnost je v rychlosti příliš vysoká. Tahle verze (v43) je záměrně
+pomalá mezikrok a **není určená k mergi do `master`**; v dalším kroku na téže
+větvi se hledá zrychlení při zachování fail-closed chování.
+
+**Stav:** Rozpracováno — funkční, ale pomalé; k mergi nepřipraveno, pokračuje se zrychlením.
 
 ---
 
