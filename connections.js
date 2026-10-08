@@ -433,6 +433,9 @@
   // uloží pro příští refreshe. Všechny requesty jdou přes
   // golemioGet/acquireSlot beze změny — jen se jich pošle víc/jinak
   // velkých, s posouvaným timeFrom.
+  //
+  // isAllowedFn dostává celý odjezd (US-6-bug-fixes: rozhoduje se i podle
+  // trip.id, ne jen podle linky a headsignu).
   async function fetchDeparturesAdaptive(pair, apiKey, isAllowedFn) {
     const now0 = new Date(); // pevný referenční bod "teď" pro celý refresh
     let shape = loadRequestShape(pair) || Object.assign({}, DEFAULT_REQUEST_SHAPE);
@@ -461,10 +464,7 @@
         seenKeys.add(key);
         mergedDepartures.push(dep);
       });
-      matched = mergedDepartures.filter((dep) => isAllowedFn(
-        dep.route && dep.route.short_name,
-        dep.trip && dep.trip.headsign
-      ));
+      matched = mergedDepartures.filter(isAllowedFn);
 
       verifiedUntil = coveredUntil(pageDepartures, pageTimeFrom, shape);
 
@@ -482,10 +482,7 @@
       const horizonExhausted = totalCoverageMinutes >= SEARCH_HORIZON_MINUTES;
       if (targetMet || horizonExhausted || attempt >= budget) break;
 
-      const pageMatched = pageDepartures.filter((dep) => isAllowedFn(
-        dep.route && dep.route.short_name,
-        dep.trip && dep.trip.headsign
-      ));
+      const pageMatched = pageDepartures.filter(isAllowedFn);
       const pageCoverageMinutes = minutesBetween(pageTimeFrom, verifiedUntil);
       shape = nextRequestShape(shape, pageDepartures, pageMatched, pageCoverageMinutes, truncated);
 
@@ -727,6 +724,25 @@
       if (destIdx !== undefined && destIdx > originIdx) candidates.add(tripId);
     });
     return candidates;
+  }
+
+  // US-6-bug-fixes: množina trip_id přímých spojů dvojice (fail-closed filtr
+  // odjezdů — zobrazit se smí jen spoj, jehož trip.id v ní je). Nejdřív z
+  // dnešní cache (bez API volání), jinak dostaví chybějící jízdní řády
+  // zastávek stejnou cestou jako computeAllowedRoutes. Chyby probublají
+  // volajícímu — ten nesmí při selhání spadnout zpátky na neověřený filtr.
+  async function loadDirectTripIds(originStopIds, destStopIds, apiKey) {
+    const cached = candidateTripIdsFromCache(originStopIds, destStopIds);
+    if (cached) return cached;
+
+    const originSeq = await mergeSequences(originStopIds, apiKey);
+    const destSeq = await mergeSequences(destStopIds, apiKey);
+    const result = new Set();
+    originSeq.forEach((originIdx, tripId) => {
+      const destIdx = destSeq.get(tripId);
+      if (destIdx !== undefined && destIdx > originIdx) result.add(tripId);
+    });
+    return result;
   }
 
   // Načte jízdním řádem daný (statický) čas příjezdu do cílové zastávky pro
@@ -1101,6 +1117,7 @@
 
   window.Connections = {
     refreshStaleAllowed,
+    loadDirectTripIds,
     searchStops,
     warmStopIndex,
     computeAllowedRoutes,

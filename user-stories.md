@@ -1297,7 +1297,15 @@ jízdním řádu spoje vyskytují víckrát (smyčkové spoje, opakovaná odjezd
 příjezdová zastávka). Zůstává dnešní definice (nejnižší `stop_sequence`),
 formát cache pozic se nemění.
 
-**Stav:** Rozpracováno.
+**Implementace (v43):** `Connections.loadDirectTripIds` (množina z dnešní
+`stop_seq_cache`, případně dostavěná přes `mergeSequences`); v `app.js`
+`directTripIds` + `isShownDeparture` (trip.id ∈ množina ∧ (linka, headsign) ∈
+`allowed`), předávané do `fetchDeparturesAdaptive` místo `isAllowed`
+(signatura filtru je teď `dep => bool`, takže i počítání shod a stránkování
+v US-20 počítá jen skutečně přímé spoje). Dokud množina není, board ukazuje
+„Ověřuji přímé spoje…"; při selhání dostavění chybovou hlášku.
+
+**Stav:** Opraveno, čeká na ruční otestování.
 
 ---
 
