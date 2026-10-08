@@ -1230,6 +1230,77 @@ dvojice, nejvýše jednou za kalendářní den na dvojici.
 
 ---
 
+## US-6-bug-fixes — Oprava: v seznamu jsou spoje linky, která mezi zvolenými zastávkami nejede
+
+Záznam opravy chování z US-6 (dopočet povolených linek) — branch
+`US-6-bug-fixes`.
+
+Hlášení uživatele (doslovné znění):
+
+> jdu na dalsi problem, ktery jsem identifikoval pri pouzivani aplikace. Kdyz
+> jsem si dnes nechal zobrazit spoje mezi zastavkami "Palmovka" a "Florenc",
+> tak mezi spoji figuruji i spoje linky cislo 10, ktera zjevne mezi
+> Palmovkou a Florenci rozhodne nejezdi. Umim si snad jen predstavit, ze z
+> konecne linky 10 (Sidliste Repy se linka prevlekne na neco, co jede na
+> Florenc, ale to je jen hypoteza a vubec netusim, ze je to ta pricina)).
+
+Upřesnění požadavků od uživatele (doslovné znění):
+
+> potrebuji, aby se mi urcite nezobrazily spoje, ktere na Florenc nakonec
+> nejedou. To je pro me nejvetsi problem. Nechci, aby mi uzivatel vlezl do
+> desitky s tim, ze ho doveze na Florenc a ono ne. Je to vyrazne horsi nez to,
+> ze mi tam nejaky spoj, ktery na Florenc bude v ramci nejakeho edge case
+> chybet
+
+> Hele, tak zpet. Problematice duplicitnich zastavek (jak odjezdovych, tak
+> prijezdovych) se ted nevenujme a nezasahujme do nich a venujme se vyreseni
+> prvotniho problemu
+
+**Příčina (analýza, ověřeno na datech z `localStorage` uživatele 2026-10-08):**
+`computeAllowedRoutes` skládá `allowed` z `trip_id` v celém okně platnosti
+feedu (cca 2 týdny, `/gtfs/stoptimes` bez filtru na datum) a z nich dělá
+unikátní dvojice `{linka, headsign}`. V okně feedu leží od 11. 10. 2026
+výlukový odklon linky 10 směr Sídliště Řepy přes Palmovku i Florenc
+(kandidátní `trip_id` mají datum 2026-10-11, 12 a 17 — číselný konec
+`trip_id` je datum `yymmdd`). Do `allowed` se tak dostal pár
+`{10, "Sídliště Řepy"}` a filtr `isAllowed` (porovnává jen linku a headsign,
+ne konkrétní spoj) pak pustí i dnešní odjezdy linky 10 se stejným headsignem,
+které na Florenc nejedou. Související s US-21: ta `allowed` obnovuje denně,
+ale pořád ho skládá z celého okna feedu, takže tuhle chybu neřeší.
+
+**Schválený postup (2026-10-08):** rozhodování podle konkrétního `trip_id`,
+ne podle dvojice linka + headsign, a zásadně **fail-closed** — priorita je
+nikdy nezobrazit spoj, který na cíl nejede, i za cenu, že v okrajovém případě
+nějaký platný spoj chybí.
+
+- Při aktivaci dvojice se z dnešní cache jízdních řádů zastávek
+  (`stop_seq_cache`, plní ji `computeAllowedRoutes`) sestaví množina
+  `trip_id` přímých spojů (stejná definice jako dosud — `candidateTripIdsFromCache`)
+  a drží se jen v paměti (žádný nový klíč v `localStorage`, žádné nové API
+  volání kromě dostavění chybějící cache). Sestavuje se jednou, ne při každém
+  refreshi odjezdů.
+- Odjezd se zobrazí jen tehdy, když jeho `dep.trip.id` je v té množině
+  **a zároveň** (linka, headsign) je v `allowed` (průnik obou podmínek).
+  Odjezd bez `trip.id` nebo s `trip.id` mimo množinu se zahodí.
+- Žádná záloha na starý filtr. Pokud množina chybí (cache za dnešek pryč,
+  první aktivace v novém dni), nezobrazí se nic neověřeného: appka ji
+  dostaví a po tu dobu ukáže „ověřuji přímé spoje…"; při selhání (síť, 429)
+  ukáže chybu místo seznamu. Chyba 401/403 se řeší jako jinde.
+- Pokud `trip.id` z `/pid/departureboards` nesedí na GTFS `trip_id` (seznam
+  by byl prázdný), nezobrazí se nic a do konzole se zapíše varování —
+  chyba se tak ukáže hned, ne potichu.
+- Platnost množiny je denní, stejně jako `allowed` (US-21). Spoj přidaný do
+  feedu v průběhu dne se tedy ukáže až po dalším denním přepočtu.
+
+**Mimo rozsah (záměrně, na přání uživatele):** zastávky, které se ve
+jízdním řádu spoje vyskytují víckrát (smyčkové spoje, opakovaná odjezdová či
+příjezdová zastávka). Zůstává dnešní definice (nejnižší `stop_sequence`),
+formát cache pozic se nemění.
+
+**Stav:** Rozpracováno.
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 
