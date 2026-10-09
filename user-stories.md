@@ -1382,7 +1382,7 @@ odstraněn, story zůstává jako historie.
 
 ---
 
-## US-22 — Cache průniku přímých spojů dvojice zastávek (DRAFT)
+## US-22 — Cache průniku přímých spojů dvojice zastávek
 
 Zadání od uživatele (doslovné znění):
 
@@ -1398,28 +1398,53 @@ cache) se proto musí bloby znovu načíst a naparsovat a průnik spočítat
 znovu, i když se pro tutéž dvojici téhož dne nic nezměnilo. Při prvním
 dotazu dne se bloby navíc stahují znovu pro každou zastávku zvlášť.
 
-**Návrh k rozpracování (neschváleno):** ukládat do samostatného
-`localStorage` klíče výsledek průniku pro konkrétní dvojici a servisní den
-(množina přímých `trip_id` + časy příjezdu jen pro tyto spoje), a při
-aktivaci dvojice číst přednostně tento klíč. Velké bloby po všech
-nástupištích by pak nebylo nutné udržovat v `localStorage` vůbec, nebo jen
-krátce.
+**Rozhodnutí uživatele (2026-10-09):**
+- Bloby `/gtfs/stoptimes` po nástupištích se **ponechají** v `localStorage`
+  (po filtru na dnešní servisní den jsou malé a jsou znovupoužitelné mezi
+  všemi dvojicemi sdílejícími zastávku). Nová cache průniku je **navíc**,
+  jen aby se ušetřilo načítání/parsování a opakovaný výpočet.
+- Cache průniku je považována za jednu z **prvních věcí k zahození**, když
+  dojde místo v `localStorage`.
+- **Bez limitu na počet dvojic** — cache se stejně celá zahodí při změně dne.
+- Platnost jen pro dnešní servisní den; řešení zítřejších spojů (okno
+  feedu přes půlnoc) je mimo scope a bude samostatná story.
+- Při chybě stahování nebo prázdném průniku se nic neukládá (fail-closed).
 
-**Otevřené otázky (před schválením zadání)**
-- Zachovat bloby po nástupištích v `localStorage` (sdílení mezi dvojicemi
-  se stejnou zastávkou), nebo je po spočtení průniku zahodit (menší objem,
-  viz US-18, ale nová dvojice se stejnou zastávkou stahuje znovu)?
-- Klíč: `den|origin>dest` (stopIds seřazená)? Kolik dvojic držet a jak
-  vytlačovat staré (LRU, jen oblíbené + naposledy použité)?
-- Platnost: jen do konce servisního dne (stejné pravidlo „včerejšek před
-  6:00" jako ve v44)?
-- Chování při neúspěšném načtení/prázdném průniku: ponechat fail-closed
-  (nezobrazit nic nejisté).
-- Dopad na ladicí zobrazení velikostí klíčů (US-15) a úklid starých klíčů.
+**Návrh řešení:**
+- Jeden `localStorage` klíč `pid_departures_pair_direct_v1` s tvarem
+  `{ day, pairs: { "<originStopIds>><destStopIds>": { trips, arrivals } } }`.
+  `stopIds` v klíči dvojice jsou seřazená a spojená; `day` = `todayKey()`.
+  `trips` jsou přímé `trip_id`, `arrivals` časy příjezdu jen pro tyto spoje.
+- `loadDirectTripIds` / `loadDestinationArrivals` (resp. `getDirectTrips`)
+  se nejprve podívají do této cache; při zásahu nestahují ani neparsují
+  bloby. Při minutí spočtou průnik jako dnes a výsledek uloží.
+- Při výpočtu A→B se z týchž blobů levně spočte i opačná dvojice B→A a uloží
+  se také (pendlování tam a zpět pak nic nepočítá ani nestahuje).
+- Klíč se přidá do `REGENERABLE_CACHE_KEYS` jako **první** (před
+  `STOP_INDEX_KEY`), takže `trySetItem` ho při `QuotaExceededError`
+  zahazuje dřív než seznam zastávek a bloby.
+- Ladicí zobrazení velikostí klíčů (US-15) prochází všechny klíče, nový klíč
+  se v něm objeví samo.
 
-**Akceptační kritéria:** doplní se po odsouhlasení návrhu.
+**Akceptační kritéria**
+- Po prvním výpočtu dvojice v daný den se průnik uloží do
+  `pid_departures_pair_direct_v1` (spolu s opačnou dvojicí).
+- Aktivace téže dvojice (nebo jejího opačného směru) po restartu appky téhož
+  dne nedělá žádný dotaz na `/gtfs/stoptimes`, nenačítá ani neparsuje
+  bloby po nástupištích a zobrazí stejné spoje jako výpočet z blobů.
+- Pokud `day` v uloženém klíči neodpovídá dnešku, cache se ignoruje
+  a přepíše novým stavem (staré dny se nikdy nenahromadí).
+- Chyba stahování, 401/403/429 a prázdný průnik nic neukládají; chování
+  zůstává fail-closed (zobrazí se jen spoje z množiny `trips`).
+- Poškozený nebo neparsovatelný záznam se bere jako cache miss
+  (přepočítá se z blobů, případně se stáhnou znovu).
+- Při `QuotaExceededError` se klíč zahazuje jako první z regenerovatelných
+  cache; po jeho zahození appka funguje beze změny, jen se průnik
+  přepočítá z blobů.
+- Žádná změna viditelného chování appky (stejné spoje jako ve v44).
+- `CACHE_NAME` / `APP_VERSION` se zvýší (změna souboru ze `SHELL_FILES`).
 
-**Stav:** Draft — čeká na upřesnění a odsouhlasení návrhu.
+**Stav:** Aktivní, zadání definováno, zatím neimplementováno.
 
 ---
 
