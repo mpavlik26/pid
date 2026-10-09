@@ -1226,7 +1226,7 @@ dvojice, nejvýše jednou za kalendářní den na dvojici.
 - Přepočet se nespouští pro všechny uložené dvojice najednou, jen pro tu,
   která se právě aktivuje.
 
-**Stav:** Aktivní, implementováno (verze v42), ručně otestováno uživatelem.
+**Stav:** Nahrazena US-6-bug-fixes (v44) — `allowed` už neexistuje, výlukové linky řeší denní množina přímých `trip_id`. (Dřív: implementováno ve verzi v42, ručně otestováno.)
 
 ---
 
@@ -1311,7 +1311,74 @@ cena za přesnost je v rychlosti příliš vysoká. Tahle verze (v43) je záměr
 pomalá mezikrok a **není určená k mergi do `master`**; v dalším kroku na téže
 větvi se hledá zrychlení při zachování fail-closed chování.
 
-**Stav:** Rozpracováno — funkční, ale pomalé; k mergi nepřipraveno, pokračuje se zrychlením.
+**Zadání zrychlení (2026-10-09, uživatel, doslovné znění):**
+
+> nejpomalejsi je to na tech prestupnich uzlech a vyrazne pomalejsi je to pri
+> prvnim dotazu v dany den.
+
+> chci v44 rovnou is body 2 a 3 a allowed bych odstranil.
+
+(Body 2 a 3 z mého rozboru: in-memory cache s dávkovým zápisem do
+`localStorage`, a průnik `trip_id` počítaný jen jednou. K nim `date` filtr
+na `/gtfs/stoptimes` a odstranění `allowed`.)
+
+**Řešení (v44):**
+- **`date` filtr na `/gtfs/stoptimes/{stopId}`:** stahuje se jen dnešní
+  servisní den (před 6:00 i včerejší — spoje po půlnoci patří do servisního
+  dne předchozího dne a mají GTFS časy ≥ 24:00). Payload je řádově menší než
+  celé okno feedu, a cache je tak vázaná na datum. `trip_id` nese datum, takže
+  se dny v jedné množině nepletou.
+- **Jeden dotaz na nástupiště místo dvou:** z jedné odpovědi
+  `/gtfs/stoptimes` se bere `stop_sequence` i `arrival_time` (dřív zvlášť pro
+  průnik a zvlášť pro časy příjezdu US-8).
+- **Průnik se počítá jednou na dvojici a den** (`getDirectTrips`, memoizovaný
+  Promise): sdílí ho filtr odjezdů (`loadDirectTripIds`) i časy příjezdu
+  (`loadDestinationArrivals`). Dřív se počítal třikrát.
+- **Denní cache v paměti:** blob z `localStorage` se naparsuje jednou za
+  session a zapisuje se dávkově (po dopočtu a při `pagehide`), ne po každém
+  nástupišti. Nové klíče `…_stop_seq_cache_v2` / `…_stop_arrivals_cache_v2`;
+  staré klíče (`route_index`, `trip_info_cache`, `stop_seq_cache`,
+  `stop_arrivals_cache`) se při startu smažou, aby se staré celo-okenní
+  záznamy nečetly jako dnešní.
+- **`allowed` je pryč úplně** (i výpočet přes `/gtfs/trips` a `/gtfs/routes`):
+  odjezd se zobrazí, jen když `trip.id ∈` množina přímých spojů dnešního dne.
+  Platnost nově zvolené dvojice = neprázdný průnik; pro dvojici bez přímého
+  spoje dnes appka hlásí „nejede žádný přímý spoj". Uložené dvojice
+  (oblíbené, naposledy použité) staré `allowed`/`computedAt` ignorují.
+- **Změna dne za běhu:** po půlnoci se `directTripIds` zahodí a sestaví znovu
+  (`resetDirectTripIdsIfNewDay`).
+- Odstraněno varování o neshodě `trip.id` vs. GTFS `trip_id` (opíralo se o
+  `allowed`); fail-closed beze změny — neověřený spoj se nezobrazí.
+
+**Dopad na US-21:** denní přepočet `allowed` (`refreshStaleAllowed`) už nemá
+co obnovovat, protože `allowed` neexistuje; jeho účel (výlukové linky se
+objeví samy) teď plní denní sestavení množiny `trip_id`. Kód US-21 byl
+odstraněn, story zůstává jako historie.
+
+**Akceptační kritéria**
+- Spoje, které na cílovou zastávku nejedou (linka 10 Palmovka → Florenc),
+  se nezobrazí (beze změny proti v43).
+- Při prvním dotazu dne se pro každé nástupiště obou zastávek stahuje jen
+  dnešní servisní den (`date=` v URL `/gtfs/stoptimes`), jeden dotaz na
+  nástupiště.
+- Opakovaná aktivace téže dvojice téhož dne nedělá žádné nové dotazy na
+  `/gtfs/stoptimes` a nečte `localStorage` opakovaně.
+- Výběr nové dvojice bez přímého spoje dnes hlásí „žádný přímý spoj".
+- V `localStorage` nezůstávají klíče z `LEGACY_CACHE_KEYS`.
+
+**Známá omezení / neověřeno:**
+- Sémantika parametru `date` (filtrování podle servisního kalendáře) je
+  podle OpenAPI potvrzená, ale end-to-end ji musí ověřit uživatel s reálným
+  klíčem (přestupní uzel, první dotaz dne, porovnání s v43).
+- Spoj patřící do jiného servisního dne než dnešek (okno `departureboards`
+  přes půlnoc dopředu) se nezobrazí — fail-closed.
+- Cache časů příjezdu se už neprořezává podle průniku dvojice (US-18
+  pruning odstraněn); s `date` filtrem je objem zhruba 1/7 původního.
+- Odložené nápady (nejsou schválené): samostatný `localStorage` klíč jen s
+  průnikem dvojice, lazy ověřování po jednom spoji přes
+  `/gtfs/trips/{id}?includeStopTimes=true`.
+
+**Stav:** Aktivní, implementováno (verze v44), čeká na ruční otestování uživatelem.
 
 ---
 

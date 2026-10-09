@@ -88,20 +88,21 @@
   let fromSearchResults = [];
   let toSearchResults = [];
 
-  // US-14: aktuálně aktivní dvojice zastávek jako celý objekt (from/to/allowed),
+  // US-14: aktuálně aktivní dvojice zastávek jako celý objekt (from/to),
   // ne jen odvozený BOARD_CONFIG — potřeba pro hvězdičkové tlačítko a pro
   // zápis do "naposledy použité" při každé aktivaci (viz activatePair).
   let currentPair = null;
 
-  // US-6-bug-fixes: množina trip_id přímých spojů aktivní dvojice (dnešní
-  // jízdní řády obou zastávek). Odjezd se zobrazí jen tehdy, když jeho
-  // trip.id v ní je — filtr podle linky + headsignu (isAllowed) sám nestačí,
-  // protože `allowed` se skládá z celého okna feedu (viz user-stories.md).
-  // Fail-closed: dokud množina není k dispozici, nezobrazí se žádný odjezd.
-  // Drží se jen v paměti, sestavuje se jednou při aktivaci dvojice.
+  // US-6-bug-fixes: množina trip_id přímých spojů aktivní dvojice (jízdní
+  // řády obou zastávek pro dnešní servisní den). Odjezd se zobrazí jen tehdy,
+  // když jeho trip.id v ní je — žádný další filtr (linka/headsign) už není,
+  // `allowed` se skládalo z celého okna feedu a pouštělo výlukové odklony
+  // (viz user-stories.md). Fail-closed: dokud množina není k dispozici,
+  // nezobrazí se žádný odjezd. Drží se jen v paměti, sestavuje se při
+  // aktivaci dvojice a znovu po změně kalendářního dne (directTripIdsDate).
   let directTripIds = null;
   let directTripIdsPromise = null;
-  let directTripIdsMismatchWarned = false;
+  let directTripIdsDate = null;
   let favoritePairsData = [];
   let recentPairsData = [];
 
@@ -151,20 +152,22 @@
     };
   }
 
-  function isAllowed(routeShort, headsign){
-    return BOARD_CONFIG.allowed.some(a =>
-      a.route === routeShort && headsign && headsign.indexOf(a.headsign) !== -1
-    );
-  }
-
-  // US-6-bug-fixes: odjezd se zobrazí, jen když (linka, headsign) je v
-  // `allowed` A ZÁROVEŇ jeho trip.id je mezi přímými spoji dnešního jízdního
-  // řádu. Bez trip.id nebo bez sestavené množiny se nezobrazí nic.
+  // US-6-bug-fixes: odjezd se zobrazí, jen když jeho trip.id je mezi přímými
+  // spoji dnešního jízdního řádu. Bez trip.id nebo bez sestavené množiny se
+  // nezobrazí nic.
   function isShownDeparture(dep){
     if (!directTripIds) return false;
     const tripId = dep.trip && dep.trip.id;
-    if (!tripId || !directTripIds.has(tripId)) return false;
-    return isAllowed(dep.route && dep.route.short_name, dep.trip.headsign);
+    return !!tripId && directTripIds.has(tripId);
+  }
+
+  // Po změně kalendářního dne (appka běží přes půlnoc) je directTripIds
+  // zastaralé — zahodí se, takže ho fetchDepartures sestaví znovu.
+  function resetDirectTripIdsIfNewDay(){
+    if (directTripIds && directTripIdsDate !== Connections.todayKey()){
+      directTripIds = null;
+      directTripIdsPromise = null;
+    }
   }
 
   // Zajistí množinu directTripIds pro aktuální dvojici (z dnešní cache, jinak
@@ -175,11 +178,14 @@
     if (directTripIds) return directTripIds;
     if (!directTripIdsPromise){
       const pair = currentPair;
+      const dateAtStart = Connections.todayKey();
       const promise = Connections.loadDirectTripIds(pair.from.stopIds, pair.to.stopIds, apiKey)
         .then((ids) => {
-          // currentPair se kvůli US-21 mění i bez přepnutí dvojice, proto
-          // se zastaralost pozná podle toho, že aktivace promise zahodila
-          if (directTripIdsPromise === promise) directTripIds = ids;
+          // aktivace jiné dvojice (nebo půlnoční reset) promise zahodila
+          if (directTripIdsPromise === promise){
+            directTripIds = ids;
+            directTripIdsDate = dateAtStart;
+          }
           return ids;
         })
         .finally(() => {
@@ -306,7 +312,7 @@
   // z formuláře Odkud/Kam, z automatického naběhnutí appky na uloženou
   // dvojici, nebo z výběru z oblíbených/naposledy použitých. Vždy zapíše
   // dvojici do "naposledy použité" a nastaví ji jako aktivní (STOP_PAIR_KEY) —
-  // routy (pair.allowed) se přebírají z dvojice beze změny, nepřepočítávají se.
+  // množina přímých spojů se při aktivaci sestaví znovu (viz ensureDirectTripIds).
   function activatePair(pair){
     currentPair = pair;
     Connections.saveStopPair(pair);
@@ -315,8 +321,7 @@
       fromLabel: pair.from.name,
       toLabel: pair.to.name,
       stopIds: pair.from.stopIds,
-      toStopIds: pair.to.stopIds,
-      allowed: pair.allowed
+      toStopIds: pair.to.stopIds
     };
     setTitle(BOARD_CONFIG);
     updateFavoriteButtonState();
@@ -327,7 +332,6 @@
     arrivalsGeneration++;
     directTripIds = null;
     directTripIdsPromise = null;
-    directTripIdsMismatchWarned = false;
     // US-17-bug-fixes: retainedDepartures/vehiclePositions/currentDepartures
     // jsou klíčované trip.id napříč celou appkou, ne per dvojice zastávek —
     // bez resetu se sem při přepnutí dvojice (i z oblíbených) na chvíli
@@ -340,31 +344,6 @@
     loadDestinationArrivals();
     fetchDepartures();
     startTimer();
-    refreshAllowedInBackground(pair);
-  }
-
-  // US-21: uložené `allowed` dvojice se jednou za kalendářní den přepočítá
-  // (viz Connections.refreshStaleAllowed), aby se v něm objevily nově
-  // zavedené/výlukové linky. Běží na pozadí — odjezdy se zobrazují hned
-  // podle starého `allowed` a nové se projeví od nejbližšího refreshe.
-  async function refreshAllowedInBackground(pair){
-    try{
-      const updated = await Connections.refreshStaleAllowed(pair, apiKey);
-      // mezitím mohl uživatel přepnout na jinou dvojici
-      if (!updated || currentPair !== pair) return;
-      currentPair = updated;
-      BOARD_CONFIG.allowed = updated.allowed;
-    }catch(e){
-      if (e.status === 401 || e.status === 403){
-        stopTimer();
-        clearKey();
-        apiKey = null;
-        showSetup('API klíč nebyl přijat (chyba ' + e.status + '). Zkontrolujte, že jste ho zkopírovali celý.');
-        return;
-      }
-      // jiná chyba: zůstává staré `allowed`, přepočet se zkusí při příští aktivaci
-      console.warn('Nepodařilo se obnovit seznam linek dvojice', e);
-    }
   }
 
   // Zahřeje klientský index zastávek (viz Connections.warmStopIndex), aby
@@ -425,7 +404,7 @@
   // dvojici zastávek, nebo jestli je potřeba nechat uživatele vybrat novou.
   function proceedAfterAuth(){
     const pair = Connections.loadStopPair();
-    if (pair && pair.from && pair.to && pair.allowed && pair.allowed.length){
+    if (pair && pair.from && pair.to){
       activatePair(pair);
     } else {
       showPicker();
@@ -590,21 +569,21 @@
     pickerProgress.style.display = 'block';
     pickerProgress.textContent = 'Zjišťuji spoje…';
     try{
-      const allowed = await Connections.computeAllowedRoutes(
+      // Platná dvojice = neprázdný průnik trip_id dnešního jízdního řádu;
+      // výsledek je memoizovaný, takže ho po aktivaci použije i board.
+      const tripIds = await Connections.loadDirectTripIds(
         selectedFrom.stopIds,
         selectedTo.stopIds,
         apiKey,
         (text) => { pickerProgress.textContent = text; }
       );
-      if (!allowed.length){
-        showPicker('Mezi těmito zastávkami nejede žádný přímý spoj. Zkuste jinou dvojici.');
+      if (!tripIds.size){
+        showPicker('Mezi těmito zastávkami dnes nejede žádný přímý spoj. Zkuste jinou dvojici.');
         return;
       }
       activatePair({
         from: selectedFrom,
-        to: selectedTo,
-        allowed,
-        computedAt: new Date().toISOString()
+        to: selectedTo
       });
     }catch(e){
       console.error(e);
@@ -994,6 +973,7 @@
     statusText.textContent = 'aktualizuji…';
     statusbar.classList.remove('live');
     try{
+      resetDirectTripIdsIfNewDay();
       // US-6-bug-fixes: dokud není k dispozici množina přímých trip_id,
       // nezobrazuje se nic neověřeného — místo seznamu hláška.
       if (!directTripIds){
@@ -1025,14 +1005,6 @@
       if (generationAtStart !== arrivalsGeneration) return; // mezitím se změnila dvojice zastávek
       coverageUntil = data.verifiedUntil || null;
       const allDepartures = data.departures || [];
-      if (allDepartures.length && !directTripIdsMismatchWarned
-          && !allDepartures.some(dep => dep.trip && directTripIds.has(dep.trip.id))
-          && allDepartures.some(dep => isAllowed(dep.route && dep.route.short_name, dep.trip && dep.trip.headsign))){
-        // trip.id z departureboards by měl sedět na GTFS trip_id; pokud
-        // nesedí na žádný, appka (fail-closed) nezobrazí nic.
-        directTripIdsMismatchWarned = true;
-        console.warn('Žádný trip.id z departureboards nesedí na přímé spoje dvojice — zkontrolujte formát trip.id vs. GTFS trip_id', allDepartures.slice(0, 3).map(dep => dep.trip && dep.trip.id), Array.from(directTripIds).slice(0, 3));
-      }
       const freshDepartures = allDepartures
         .filter(isShownDeparture)
         .map(dep => { dep._predicted = predictedDate(dep); return dep; });
