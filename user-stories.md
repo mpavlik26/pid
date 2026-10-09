@@ -1412,9 +1412,14 @@ dotazu dne se bloby navíc stahují znovu pro každou zastávku zvlášť.
 
 **Návrh řešení:**
 - Jeden `localStorage` klíč `pid_departures_pair_direct_v1` s tvarem
-  `{ day, pairs: { "<originStopIds>><destStopIds>": { trips, arrivals } } }`.
+  `{ day, pairs: { "<originStopIds>><destStopIds>": { t: [[tripId, arrival|null], …] } } }`.
   `stopIds` v klíči dvojice jsou seřazená a spojená; `day` = `todayKey()`.
-  `trips` jsou přímé `trip_id`, `arrivals` časy příjezdu jen pro tyto spoje.
+  `t` obsahuje přímé `trip_id` s časem příjezdu do cílové zastávky dvojice
+  (`null`, pokud čas chybí) — jedna kompaktní struktura místo dvou.
+- Aby šlo z týchž dat spočítat i opačný směr, ukládají se od v45 do blobu
+  příjezdů (`…_arrivals_cache_v2`) časy i pro nástupiště *výchozí* zastávky
+  (dřív jen pro cílovou). Blob příjezdů je proto o něco větší; starší
+  záznamy z v44 bez těchto dat se jednorázově stáhnou znovu.
 - `loadDirectTripIds` / `loadDestinationArrivals` (resp. `getDirectTrips`)
   se nejprve podívají do této cache; při zásahu nestahují ani neparsují
   bloby. Při minutí spočtou průnik jako dnes a výsledek uloží.
@@ -1444,7 +1449,7 @@ dotazu dne se bloby navíc stahují znovu pro každou zastávku zvlášť.
 - Žádná změna viditelného chování appky (stejné spoje jako ve v44).
 - `CACHE_NAME` / `APP_VERSION` se zvýší (změna souboru ze `SHELL_FILES`).
 
-**Stav:** Aktivní, zadání definováno, zatím neimplementováno.
+**Stav:** Aktivní, implementováno (verze v45), čeká na ruční otestování uživatelem.
 
 ---
 
