@@ -1382,6 +1382,47 @@ odstraněn, story zůstává jako historie.
 
 ---
 
+## US-22 — Cache průniku přímých spojů dvojice zastávek (DRAFT)
+
+Zadání od uživatele (doslovné znění):
+
+> zaloz prosim US-22 branch, a do user-stories.md dej draft storky, ktera
+> bude resit cache s prunikem dvojice.
+
+**Kontext (z US-6-bug-fixes, v44):** průnik `trip_id` přímých spojů dvojice
+zastávek se po prvním výpočtu drží jen v paměti (`getDirectTrips`, max. 5
+dvojic). Vstupem výpočtu jsou denní bloby `/gtfs/stoptimes` pro *všechna*
+nástupiště obou zastávek (`localStorage`, `pid_departures_stop_seq_cache_v2`
+a `…_arrivals_cache_v2`). Po novém startu appky (nebo po výpadku in-memory
+cache) se proto musí bloby znovu načíst a naparsovat a průnik spočítat
+znovu, i když se pro tutéž dvojici téhož dne nic nezměnilo. Při prvním
+dotazu dne se bloby navíc stahují znovu pro každou zastávku zvlášť.
+
+**Návrh k rozpracování (neschváleno):** ukládat do samostatného
+`localStorage` klíče výsledek průniku pro konkrétní dvojici a servisní den
+(množina přímých `trip_id` + časy příjezdu jen pro tyto spoje), a při
+aktivaci dvojice číst přednostně tento klíč. Velké bloby po všech
+nástupištích by pak nebylo nutné udržovat v `localStorage` vůbec, nebo jen
+krátce.
+
+**Otevřené otázky (před schválením zadání)**
+- Zachovat bloby po nástupištích v `localStorage` (sdílení mezi dvojicemi
+  se stejnou zastávkou), nebo je po spočtení průniku zahodit (menší objem,
+  viz US-18, ale nová dvojice se stejnou zastávkou stahuje znovu)?
+- Klíč: `den|origin>dest` (stopIds seřazená)? Kolik dvojic držet a jak
+  vytlačovat staré (LRU, jen oblíbené + naposledy použité)?
+- Platnost: jen do konce servisního dne (stejné pravidlo „včerejšek před
+  6:00" jako ve v44)?
+- Chování při neúspěšném načtení/prázdném průniku: ponechat fail-closed
+  (nezobrazit nic nejisté).
+- Dopad na ladicí zobrazení velikostí klíčů (US-15) a úklid starých klíčů.
+
+**Akceptační kritéria:** doplní se po odsouhlasení návrhu.
+
+**Stav:** Draft — čeká na upřesnění a odsouhlasení návrhu.
+
+---
+
 <!--
 Šablona pro novou story — zkopíruj a vyplň:
 
