@@ -1378,7 +1378,7 @@ odstraněn, story zůstává jako historie.
   průnikem dvojice, lazy ověřování po jednom spoji přes
   `/gtfs/trips/{id}?includeStopTimes=true`.
 
-**Stav:** Aktivní, implementováno (verze v44), čeká na ruční otestování uživatelem.
+**Stav:** Aktivní, implementováno (verze v44), ručně otestováno uživatelem, zmergováno do `master`.
 
 ---
 
