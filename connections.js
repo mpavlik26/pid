@@ -27,6 +27,12 @@
   const STOP_SEQ_CACHE_KEY = 'pid_departures_stop_seq_cache_v2';
   const STOP_ARRIVALS_CACHE_KEY = 'pid_departures_stop_arrivals_cache_v2';
 
+  // US-22: hotový průnik přímých spojů dvojice na dnešní den (viz
+  // getDirectTrips / loadPairCache). Je to jen zrychlení nad bloby výše —
+  // proto je v REGENERABLE_CACHE_KEYS první, tedy mezi prvními věcmi, které
+  // se při plné kvótě zahodí.
+  const PAIR_DIRECT_CACHE_KEY = 'pid_departures_pair_direct_v1';
+
   // Klíče z dřívějších verzí, které appka už nepoužívá (v44: pryč je dopočet
   // `allowed` přes /gtfs/trips a /gtfs/routes a staré stoptimes cache bez
   // date filtru). Při startu se smažou, ať zbytečně nedrží kvótu localStorage.
@@ -50,6 +56,7 @@
   // iOS) bývá kvóta localStorage jen kolem 1 MB, takže tyhle větší cache
   // (hlavně celý seznam zastávek) ji časem vyčerpají — viz trySetItem.
   const REGENERABLE_CACHE_KEYS = [
+    PAIR_DIRECT_CACHE_KEY,
     STOP_INDEX_KEY,
     STOP_SEQ_CACHE_KEY,
     STOP_ARRIVALS_CACHE_KEY,
@@ -141,7 +148,7 @@
   }
 
   // Zapíše všechny změněné bloby do localStorage najednou. Volá se explicitně
-  // na konci dávky nástupišť (viz computeDirectTrips), jinak
+  // na konci dávky nástupišť (viz computeDirectTripsBothWays), jinak
   // nejpozději po DAY_CACHE_FLUSH_MS a při opuštění stránky.
   function flushDayCaches() {
     clearTimeout(dayFlushTimer);
@@ -181,6 +188,68 @@
 
   window.addEventListener('pagehide', flushDayCaches);
 
+  // US-22: cache hotových průniků přímých spojů. Jeden localStorage klíč
+  // { day, pairs: { "<stopIds A>><stopIds B>": { t: [[trip_id, čas příjezdu
+  // do cíle | null], ...] } } }; `day` = dnešní kalendářní den, jiný den se
+  // ignoruje a při dalším zápisu přepíše (staré dny se nehromadí). Naparsuje
+  // se jednou za session (pairBlob), zapisuje se hned po výpočtu — jde o
+  // jediný zápis na dvojici a den. Bez limitu počtu dvojic: celý klíč se
+  // stejně zahazuje při změně dne a je první v REGENERABLE_CACHE_KEYS.
+  let pairBlob = null;
+
+  function getPairBlob() {
+    const today = todayKey();
+    if (pairBlob && pairBlob.day === today) return pairBlob;
+    let blob = { day: today, pairs: {} };
+    try {
+      const raw = localStorage.getItem(PAIR_DIRECT_CACHE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && parsed.day === today && parsed.pairs && typeof parsed.pairs === 'object') {
+        blob = parsed;
+      }
+    } catch (e) {
+      // poškozený záznam v localStorage - začínáme s prázdnou cache
+    }
+    pairBlob = blob;
+    return blob;
+  }
+
+  // Klíč dvojice nezávisí na pořadí nástupišť v rámci zastávky.
+  function pairCacheKey(originStopIds, destStopIds) {
+    return originStopIds.slice().sort().join(',') + '>' + destStopIds.slice().sort().join(',');
+  }
+
+  // Vrátí { tripIds: Set, arrivals: Map } z cache, nebo null (chybí, jiný den,
+  // prázdný nebo poškozený záznam = cache miss, průnik se spočte z blobů).
+  function loadPairCache(originStopIds, destStopIds) {
+    const entry = getPairBlob().pairs[pairCacheKey(originStopIds, destStopIds)];
+    if (!entry || !Array.isArray(entry.t) || !entry.t.length) return null;
+    const tripIds = new Set();
+    const arrivals = new Map();
+    for (const item of entry.t) {
+      if (!Array.isArray(item) || typeof item[0] !== 'string') return null;
+      tripIds.add(item[0]);
+      if (typeof item[1] === 'string') arrivals.set(item[0], item[1]);
+    }
+    return { tripIds, arrivals };
+  }
+
+  // Uloží průnik dvojice. Prázdný průnik se neukládá (fail-closed: appka ho
+  // vždy znovu ověří). Selhání zápisu (kvóta) není fatální — cache je jen
+  // zrychlení, o místo se nepřetahujeme na úkor ostatních dat.
+  function savePairCache(originStopIds, destStopIds, result) {
+    if (!result.tripIds.size) return;
+    const blob = getPairBlob();
+    blob.pairs[pairCacheKey(originStopIds, destStopIds)] = {
+      t: Array.from(result.tripIds, (tripId) => [tripId, result.arrivals.get(tripId) || null])
+    };
+    try {
+      localStorage.setItem(PAIR_DIRECT_CACHE_KEY, JSON.stringify(blob));
+    } catch (e) {
+      console.warn('Nepodařilo se uložit cache průniku', e);
+    }
+  }
+
   // Úklid klíčů z dřívějších verzí (viz LEGACY_CACHE_KEYS).
   LEGACY_CACHE_KEYS.forEach((key) => {
     try { localStorage.removeItem(key); } catch (e) { /* ignorujeme */ }
@@ -201,6 +270,7 @@
       for (const cacheKey of REGENERABLE_CACHE_KEYS) {
         dayBlobs.delete(cacheKey);
         dirtyDayBlobs.delete(cacheKey);
+        if (cacheKey === PAIR_DIRECT_CACHE_KEY) pairBlob = null;
         try { localStorage.removeItem(cacheKey); } catch (e2) { /* ignorujeme */ }
         try {
           localStorage.setItem(key, value);
@@ -707,19 +777,20 @@
   }
 
   // Dnešní jízdní řád nástupiště z denní cache, jinak ze serveru (a uloží do
-  // cache). needArrivals — cílová nástupiště potřebují i časy příjezdu (US-8);
-  // pro výchozí stačí pořadí zastavení, takže se arrivals nedrží ani neukládá.
-  // Cache je per nástupiště (ne per dvojice), ať se sdílí mezi dvojicemi.
-  async function loadStopTimes(stopId, apiKey, needArrivals) {
+  // cache). Od US-22 se ukládá pořadí i časy příjezdu pro každé nástupiště
+  // (dřív arrivals jen pro cílová), protože se z týchž dat počítá průnik pro
+  // oba směry dvojice. Cache je per nástupiště (ne per dvojice), ať se sdílí
+  // mezi dvojicemi.
+  async function loadStopTimes(stopId, apiKey) {
     const cachedSeq = loadDayCache(STOP_SEQ_CACHE_KEY, stopId);
-    const cachedArr = needArrivals ? loadDayCache(STOP_ARRIVALS_CACHE_KEY, stopId) : null;
-    if (cachedSeq && (!needArrivals || cachedArr)) {
-      return { seq: new Map(cachedSeq), arr: cachedArr ? new Map(cachedArr) : null };
+    const cachedArr = loadDayCache(STOP_ARRIVALS_CACHE_KEY, stopId);
+    if (cachedSeq && cachedArr) {
+      return { seq: new Map(cachedSeq), arr: new Map(cachedArr) };
     }
     const { seq, arr } = await downloadStopTimes(stopId, apiKey);
     saveDayCache(STOP_SEQ_CACHE_KEY, stopId, Array.from(seq.entries()));
-    if (needArrivals) saveDayCache(STOP_ARRIVALS_CACHE_KEY, stopId, Array.from(arr.entries()));
-    return { seq, arr: needArrivals ? arr : null };
+    saveDayCache(STOP_ARRIVALS_CACHE_KEY, stopId, Array.from(arr.entries()));
+    return { seq, arr };
   }
 
   // Sloučí pořadí zastavení z víc nástupišť jedné zastávky (nejnižší
@@ -731,45 +802,55 @@
     });
   }
 
-  // Průnik spojů výchozí a cílové zastávky dvojice — přímý spoj je takový
-  // trip_id, který zastavuje na výchozí zastávce PŘED cílovou (nižší
-  // stop_sequence). Vrací { tripIds: Set, arrivals: Map trip_id -> čas
-  // příjezdu do cíle } jen pro přímé spoje.
+  // Načte (z cache nebo ze serveru) jízdní řády všech nástupišť jedné
+  // zastávky a sloučí je: { seq: Map trip_id -> nejnižší stop_sequence,
+  // arr: Map trip_id -> čas příjezdu }.
   //
   // Přestupní uzly (typicky metro) mají pod stejným stop_name desítky
   // nástupišť/směrů (samostatné stop_id) — golemioGet requesty sdíleně
   // rozpočítá (viz acquireSlot), takže ani u velkých uzlů appka nepřekročí
   // Golemio rate limit (20 req / 8 s na klíč).
-  async function computeDirectTrips(originStopIds, destStopIds, apiKey, onProgress) {
-    const report = (text) => { if (onProgress) onProgress(text); };
-
-    report('Načítám jízdní řád výchozí zastávky…');
-    const originSeq = new Map();
-    for (const stopId of originStopIds) {
-      const { seq } = await loadStopTimes(stopId, apiKey, false);
-      mergeMinSeq(originSeq, seq);
+  async function loadStopTimesMerged(stopIds, apiKey) {
+    const seq = new Map();
+    const arr = new Map();
+    for (const stopId of stopIds) {
+      const times = await loadStopTimes(stopId, apiKey);
+      mergeMinSeq(seq, times.seq);
+      times.arr.forEach((time, tripId) => arr.set(tripId, time));
     }
+    return { seq, arr };
+  }
 
-    report('Načítám jízdní řád cílové zastávky…');
-    const destSeq = new Map();
-    const destArr = new Map();
-    for (const stopId of destStopIds) {
-      const { seq, arr } = await loadStopTimes(stopId, apiKey, true);
-      mergeMinSeq(destSeq, seq);
-      arr.forEach((time, tripId) => destArr.set(tripId, time));
-    }
-    flushDayCaches();
-
+  // Průnik spojů výchozí a cílové zastávky — přímý spoj je takový trip_id,
+  // který zastavuje na výchozí zastávce PŘED cílovou (nižší stop_sequence).
+  // Vrací { tripIds: Set, arrivals: Map trip_id -> čas příjezdu do cíle }
+  // jen pro přímé spoje.
+  function intersectDirect(from, to) {
     const tripIds = new Set();
     const arrivals = new Map();
-    originSeq.forEach((originIdx, tripId) => {
-      const destIdx = destSeq.get(tripId);
-      if (destIdx === undefined || destIdx <= originIdx) return;
+    from.seq.forEach((fromIdx, tripId) => {
+      const toIdx = to.seq.get(tripId);
+      if (toIdx === undefined || toIdx <= fromIdx) return;
       tripIds.add(tripId);
-      const time = destArr.get(tripId);
+      const time = to.arr.get(tripId);
       if (time) arrivals.set(tripId, time);
     });
     return { tripIds, arrivals };
+  }
+
+  // Z týchž načtených dat se spočte průnik pro oba směry dvojice (US-22):
+  // forward = A→B, reverse = B→A. Pendlování tam a zpět pak nestahuje ani
+  // nepočítá nic navíc.
+  async function computeDirectTripsBothWays(aStopIds, bStopIds, apiKey, onProgress) {
+    const report = (text) => { if (onProgress) onProgress(text); };
+
+    report('Načítám jízdní řád výchozí zastávky…');
+    const a = await loadStopTimesMerged(aStopIds, apiKey);
+    report('Načítám jízdní řád cílové zastávky…');
+    const b = await loadStopTimesMerged(bStopIds, apiKey);
+    flushDayCaches();
+
+    return { forward: intersectDirect(a, b), reverse: intersectDirect(b, a) };
   }
 
   // Průnik se počítá JEDNOU na dvojici a dnešní den (v44) — sdílí ho
@@ -777,15 +858,35 @@
   // příjezdu); dřív se počítal třikrát nezávisle. Memoizuje se i rozběhnutý
   // dotaz (Promise), takže souběžné volání obou funkcí nestáhne nic dvakrát.
   // Při chybě se memo zahodí, ať se příští pokus zkusí znovu.
+  //
+  // US-22: před výpočtem se zkusí perzistentní cache hotových průniků
+  // (loadPairCache) — při zásahu se nestahují ani neparsují bloby. Po výpočtu
+  // se uloží oba směry dvojice (prázdný průnik ne, viz savePairCache).
   const directTripsMemo = new Map();
 
   function getDirectTrips(originStopIds, destStopIds, apiKey, onProgress) {
-    const memoKey = todayKey() + '|' + originStopIds.join(',') + '>' + destStopIds.join(',');
+    const memoKey = todayKey() + '|' + pairCacheKey(originStopIds, destStopIds);
     let promise = directTripsMemo.get(memoKey);
     if (!promise) {
       if (directTripsMemo.size >= 5) directTripsMemo.clear();
-      promise = computeDirectTrips(originStopIds, destStopIds, apiKey, onProgress);
-      promise.catch(() => directTripsMemo.delete(memoKey));
+      const cached = loadPairCache(originStopIds, destStopIds);
+      if (cached) {
+        promise = Promise.resolve(cached);
+      } else {
+        promise = computeDirectTripsBothWays(originStopIds, destStopIds, apiKey, onProgress)
+          .then(({ forward, reverse }) => {
+            savePairCache(originStopIds, destStopIds, forward);
+            savePairCache(destStopIds, originStopIds, reverse);
+            if (reverse.tripIds.size) {
+              directTripsMemo.set(
+                todayKey() + '|' + pairCacheKey(destStopIds, originStopIds),
+                Promise.resolve(reverse)
+              );
+            }
+            return forward;
+          });
+        promise.catch(() => directTripsMemo.delete(memoKey));
+      }
       directTripsMemo.set(memoKey, promise);
     }
     return promise;
